@@ -1,0 +1,5 @@
+# Runtime dependencies for confirmed-ctl.
+# Pinned to major versions; see pyproject.toml for the canonical list.
+click>=8.1
+PyYAML>=6.0
+mysql-connector-python>=8.3

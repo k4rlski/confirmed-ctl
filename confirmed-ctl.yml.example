@@ -1,0 +1,55 @@
+# confirmed-ctl configuration template.
+# Copy to `confirmed-ctl.yml` and fill in real values. The real file is
+# git-ignored and must never be committed (it contains credentials).
+
+# CRM MySQL connection (permtrak2_crm.t_e_s_t_p_e_r_m)
+crm:
+  host: permtrak.com
+  port: 3306
+  database: permtrak2_crm
+  user: CHANGE_ME
+  password: CHANGE_ME
+  # Table + join used by the trigger query.
+  cases_table: t_e_s_t_p_e_r_m
+  news_table: news
+  # Statuses that trigger confirmed-ctl (see docs/OPEN-QUESTIONS.md Q1).
+  trigger_statuses:
+    - Confirmed
+    - PaymentConfirmed
+  # Terminal status written when a case is fully reconciled.
+  done_status: Done
+
+# gmail-ctl integration (Gmail search + PDF download).
+gmail:
+  # Path to the deployed gmail-ctl checkout / executable.
+  gmail_ctl_path: /opt/auto-cmd/gmail-ctl
+  # Accounts to search for ad-confirmation emails.
+  accounts:
+    - auto-ctl@perm-ads.com
+    - info@perm-ads.com
+
+# plaid-ctl integration (transaction re-verification).
+plaid:
+  plaid_ctl_path: /opt/auto-cmd/plaid-ctl
+  # Default bank-transaction search window in hours (overridable with --hours).
+  default_window_hours: 48
+  # Allowed absolute difference between invoice and transaction amount.
+  amount_tolerance: 1.00
+
+# Dropbox storage via rclone.
+dropbox:
+  # rclone remote name (see docs/DROPBOX.md).
+  remote: dropbox
+  base_path: Receipts/Newspapers
+  # Local scratch directory for downloaded PDFs before upload.
+  staging_dir: ./receipts_tmp
+
+# Optional Slack alerting (Phase 2 — leave blank to disable).
+slack:
+  webhook_url: ""
+  channel: "#reports-ctl"
+
+# Logging
+logging:
+  level: INFO
+  file: ""  # empty = stderr only

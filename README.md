@@ -98,6 +98,47 @@ No other fields. No schema changes.
 
 ---
 
+## Development
+
+Requires Python 3.10+.
+
+```bash
+# Build the environment (venv + editable install + dev deps)
+make install          # or: python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+
+# Configure
+cp confirmed-ctl.yml.example confirmed-ctl.yml   # then fill in CRM creds
+# (or export CONFIRMED_CTL_CRM_USER / CONFIRMED_CTL_CRM_PASSWORD, etc.)
+
+# Run
+.venv/bin/confirmed-ctl --help
+.venv/bin/confirmed-ctl status
+
+# Test + lint
+make test             # pytest
+make lint             # ruff
+```
+
+### Project layout
+
+```
+src/confirmed_ctl/
+  main.py           # Click CLI entry point (confirmed-ctl)
+  config.py         # confirmed-ctl.yml loader (+ env overrides)
+  models.py         # Case / GmailResult / PlaidResult / CaseReport
+  crm_client.py     # CRM MySQL — trigger query + allow-listed writes
+  gmail_receipt.py  # gmail-ctl bridge (search + PDF download)
+  plaid_verifier.py # plaid-ctl bridge (re-verify transaction)
+  dropbox_store.py  # rclone upload + shared link
+  pipeline.py       # per-case orchestration (partial-completion table)
+tests/              # unit tests for the pure logic
+```
+
+> Status: v0.1.0 scaffold. The CLI, config, orchestration, Dropbox path logic,
+> and CRM write allow-list are implemented and tested. The live `gmail-ctl`,
+> `plaid-ctl`, and `rclone` bridges are stubbed (marked `TODO(phase1)`) pending
+> those upstream tools being deployed — see [ROADMAP.md](docs/ROADMAP.md).
+
 ## Docs
 
 - [DESIGN.md](docs/DESIGN.md) — architecture, pipeline, module breakdown
