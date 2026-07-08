@@ -55,6 +55,24 @@ Receipt download/archiving is also handled by the separate **receipt-ctl** tool
 (see [`docs/RECEIPT-CTL.md`](docs/RECEIPT-CTL.md)); a lightweight in-suite
 downloader is available via `confirmed-ctl receipts`.
 
+### BofA email-scan: where the alerts live (run daily)
+
+BofA transaction alerts are sent to `info@perm-ads.com`, but a Gmail filter
+auto-sends them to **Trash**. The Gmail client therefore lists with
+`includeSpamTrash=True` (`gmail/client.py::search_messages`) — without it the
+scan silently finds nothing. Because **Gmail purges Trash after ~30 days**, the
+email-scan must run **daily** to stay complete. A durable INBOX copy of every
+alert is also forwarded to `karl@perm-ads.com`; if the mailbox is ever
+repointed, set `GMAIL_IMPERSONATE=karl@perm-ads.com` (the impersonated mailbox
+is configurable via `GMAIL_IMPERSONATE`, defaulting to `info@perm-ads.com`).
+
+The scan uses a broad, date-bounded **sender** query
+(`from:onlinebanking@ealerts.bankofamerica.com after:<epoch>`) — not brittle
+`subject:"…"` phrase queries, which under-match — then classifies each message
+by a case-insensitive substring of its raw `Subject` header and parses the
+HTML-only body by **pairing the two-column data-table cells** (label `<td>` →
+value `<td>`) with BeautifulSoup.
+
 ---
 
 ## CLI

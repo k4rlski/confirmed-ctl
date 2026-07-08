@@ -1,54 +1,68 @@
 """BofA transaction-alert email-scan ingestion adapter.
 
-This adapter reads (read-only) the ``info@perm-ads.com`` mailbox via the
-service-account Gmail client and parses Bank of America transaction alerts
-(all sent from ``onlinebanking@ealerts.bankofamerica.com``) into
-``bank_transactions`` rows (``source='email-scan'``).
+This adapter reads (read-only) the impersonated mailbox (``GMAIL_IMPERSONATE``,
+default ``info@perm-ads.com``) via the service-account Gmail client and parses
+Bank of America transaction alerts (all sent from
+``onlinebanking@ealerts.bankofamerica.com``) into ``bank_transactions`` rows
+(``source='email-scan'``).
 
-REAL FORMATS
-------------
-Every BofA alert in this mailbox is **HTML-only** (there is no ``text/plain``
-part), so ``gmail.client.get_body_text`` converts the HTML body to plain text
-(tags/entities stripped) BEFORE any label extraction happens here. Parsing is
-label-based on that rendered text and tolerant of where HTML structure places
-the label vs. its value (same line or the next line).
+WHERE THE ALERTS LIVE (operational caveat)
+------------------------------------------
+A Gmail filter on ``info@perm-ads.com`` auto-sends BofA alerts to **Trash**, so
+the Gmail client MUST list with ``includeSpamTrash=True`` (see
+``gmail.client.search_messages``) or the scan finds nothing. Gmail purges Trash
+after ~30 days, so the scan must run **daily** for completeness. A durable INBOX
+copy of every alert is also forwarded to ``karl@perm-ads.com``; if the mailbox
+is ever repointed there, set ``GMAIL_IMPERSONATE=karl@perm-ads.com`` (it is
+configurable; the default stays ``info@perm-ads.com`` per the user directive).
 
-A subject-substring → schema routing table (case-insensitive) selects the
-parser per alert. The known real subjects / schemas:
+REAL FORMATS (bs4 table-cell pairing)
+-------------------------------------
+Every BofA alert here is **HTML-only**. The modern alerts render each field as a
+two-cell table row: a LABEL ``<td>`` followed by a VALUE ``<td>`` (the value is
+usually wrapped in ``<b>``). This adapter parses the RAW HTML with BeautifulSoup
+and pairs adjacent cell texts (label -> value) — it does NOT rely on a flattened
+"label: value" text rendering, which mis-associated fields. Internal whitespace
+in values is collapsed (merchant strings carry irregular multiple spaces, e.g.
+``"SA EXPRESS NEWS ADV   -SAN ANTONIO  ,TX"``).
 
-- ``SCHEMA-DEBITCARD-OVERLIMIT`` — "Account Alert: Debit/ATM Card Transaction
-  Over Your Chosen Alert Limit". One transaction per email.
-  Labels: ``Amount:`` ("$ 856.00"), ``Debit/ATM card:`` ("ending in - 5723"),
-  ``Where:`` ("at MERCHANT-CITY ,ST"), ``Transaction type:`` ("PURCH W/O PIN"),
-  ``When:`` ("on July 07, 2024").
-- ``SCHEMA-DEBITCARD-USED`` — "Account Alert: Debit Card Used Online, by Phone
-  or by Mail". SINGLE **or BATCHED** — the ``Account:``/``Amount:``/``Made at:``/
-  ``On:`` block repeats once per transaction. Parsed by looping over every
-  ``Account:`` block (no delimiter char). Amount may be immediately followed by a
-  footnote superscript digit ("$ 15.001") which is NOT a quantity and is ignored.
-- ``SCHEMA-ACH-WITHDRAWAL`` — "A withdrawal was made over the limit you set".
-  ACH, NO card-ending field. Labels: ``Amount`` ("$1,487.50" — comma thousands,
-  no space after ``$``), ``Type`` ("ELEC DRAFT (ACH)"), ``Account`` ("Ad Buys
-  0353 - 0353", nickname + last4), ``Merchant`` ("AUDACY PURCHASE"),
-  ``Transaction date`` ("June 13, 2025").
-- ``SCHEMA-CURRENT-VARIANT`` — "A transaction occurred over the limit you set".
-  The user's CURRENT live alert; we only have RENDERED fields (no raw HTML
-  fixture), so its field regexes remain heuristic (# REFINE). Labels: ``Amount``,
-  ``Debit/ATM card``, ``Merchant``, ``Transaction type``, ``Date``.
+A subject-substring -> schema routing table (case-insensitive) selects the
+per-alert field map. The supported schemas (all sender
+``onlinebanking@ealerts.bankofamerica.com``):
 
-Two additional ACH-shaped subjects (no card-ending field) are routed best-effort
-to the ACH withdrawal parser (# REFINE): "Activity Alert: Electronic or Online
-Withdrawal Over Your Chosen Alert Limit" and "Online transfer occurred over the
-limit you set".
+- ``SCHEMA-CARD`` — debit/ATM card transaction over the limit. Current subject
+  "A transaction occurred over the limit you set"; older backfill subject
+  "Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit".
+  Fields: Amount ("$2,000.00"), Debit/ATM card ("ending in 5723" — no dash; also
+  older "ending in - 5723"), Merchant, Transaction type ("PURCH W/O PIN"), Date
+  ("July 08, 2026"). HIGHEST VALUE for ad matching. (Real .eml fixture.)
+- ``SCHEMA-ACH-WITHDRAWAL`` — ACH withdrawal over the limit. Current subject
+  "A withdrawal was made over the limit you set"; older backfill "Activity Alert:
+  Electronic or Online Withdrawal Over Your Chosen Alert Limit". Fields: Amount,
+  Type ("ELEC DRAFT (ACH)"), Account ("Ad Buys 0353 - 0353" nickname + last4),
+  Merchant ("COXMEDIAGROUP    WEBPAYMENT"), Transaction date. (Real .eml fixture.)
+- ``SCHEMA-TRANSFER`` — online transfer over the limit. Current subject "Online
+  transfer occurred over the limit you set"; older backfill "Activity Alert:
+  Online Transfer Over Your Chosen Alert Limit". Fields: Account ("ending in
+  0353"), Amount, Transaction date. NO merchant/type — tolerant (needs only
+  amount + date + last4). # REFINE: no raw HTML fixture yet (assumes the modern
+  two-column table like CARD/ACH).
+- ``SCHEMA-DEBITCARD-USED`` — debit card used online/phone/mail. Current subject
+  "Your debit card was used"; older backfill "Debit Card Used Online, by Phone
+  or by Mail". SINGLE **or BATCHED**: an ``Account``/``Amount``/``Made at``/``On``
+  block repeats once per transaction; parsed by looping over every ``Account``
+  block. # REFINE: no raw HTML fixture yet (structure assumed from older text).
 
 Idempotency / ``source_txn_id`` derivation (see ``ingest.dedup``):
 
-- Single-transaction alert → the Gmail ``message_id``.
-- Each block of a BATCHED alert → ``f"{message_id}:{block_index}"``.
+- Single-transaction alert -> the Gmail ``message_id``.
+- Each block of a BATCHED alert -> ``f"{message_id}:{block_index}"``.
 
-Both are fed through ``deterministic_source_txn_id(..., fitid=<id>)`` so re-scans
-collapse on the ``uq_bank_transactions_source_txn`` unique constraint
-(insert-conflict → SKIP). Both ``source`` and ``source_txn_id`` stay ``NOT NULL``.
+Iteration is MESSAGE-LEVEL (one logical row per message id; batched blocks add a
+``:i`` suffix). Thread-grouped same-day alerts each carry a distinct message id,
+so they each become a distinct row. Both ``source`` and ``source_txn_id`` stay
+``NOT NULL`` and re-scans collapse on ``uq_bank_transactions_source_txn``
+(insert-conflict -> SKIP).
 """
 
 from __future__ import annotations
@@ -65,48 +79,35 @@ from .dedup import email_scan_source_txn_id
 
 log = logging.getLogger("confirmed-ctl.email-scan")
 
+# All BofA transaction alerts arrive from this single sender.
+BOFA_SENDER = "onlinebanking@ealerts.bankofamerica.com"
+
 # --- Schema keys -----------------------------------------------------------
 
-SCHEMA_DEBITCARD_OVERLIMIT = "SCHEMA-DEBITCARD-OVERLIMIT"
-SCHEMA_DEBITCARD_USED = "SCHEMA-DEBITCARD-USED"
+SCHEMA_CARD = "SCHEMA-CARD"
 SCHEMA_ACH_WITHDRAWAL = "SCHEMA-ACH-WITHDRAWAL"
-SCHEMA_CURRENT_VARIANT = "SCHEMA-CURRENT-VARIANT"  # REFINE: no raw HTML sample
+SCHEMA_TRANSFER = "SCHEMA-TRANSFER"  # REFINE: no raw HTML fixture yet
+SCHEMA_DEBITCARD_USED = "SCHEMA-DEBITCARD-USED"  # REFINE: no raw HTML fixture yet
 
-# --- Subject → schema routing table ----------------------------------------
+# --- Subject -> schema routing table ---------------------------------------
 #
 # Ordered list of (subject substring, schema key). Matching is case-insensitive
-# substring containment against the message subject. Order matters only if a
-# subject could contain two substrings (none of the real ones overlap).
+# substring containment against the RAW ``Subject`` header. Both the current and
+# older (backfill) subjects for each schema are listed. Order is irrelevant here
+# because no substring of one schema is contained in another schema's subject.
 SUBJECT_ROUTES: tuple[tuple[str, str], ...] = (
-    (
-        "Debit/ATM Card Transaction Over Your Chosen Alert Limit",
-        SCHEMA_DEBITCARD_OVERLIMIT,
-    ),
-    (
-        "Debit Card Used Online, by Phone or by Mail",
-        SCHEMA_DEBITCARD_USED,
-    ),
-    (
-        "A withdrawal was made over the limit you set",
-        SCHEMA_ACH_WITHDRAWAL,
-    ),
-    # Best-effort: ACH-shaped withdrawals (no card-ending field); route to the
-    # ACH schema until a raw sample confirms otherwise. # REFINE
-    (
-        "Electronic or Online Withdrawal Over Your Chosen Alert Limit",
-        SCHEMA_ACH_WITHDRAWAL,
-    ),
-    # Best-effort: ACH-shaped transfer over the limit; treat like the ACH
-    # withdrawal layout until a raw sample confirms otherwise. # REFINE
-    (
-        "Online transfer occurred over the limit you set",
-        SCHEMA_ACH_WITHDRAWAL,
-    ),
-    # The user's CURRENT live alert — rendered fields only, no raw fixture. # REFINE
-    (
-        "A transaction occurred over the limit you set",
-        SCHEMA_CURRENT_VARIANT,
-    ),
+    # CARD — current + older backfill.
+    ("a transaction occurred over the limit you set", SCHEMA_CARD),
+    ("Debit/ATM Card Transaction Over Your Chosen Alert Limit", SCHEMA_CARD),
+    # ACH WITHDRAWAL — current + older backfill.
+    ("a withdrawal was made over the limit you set", SCHEMA_ACH_WITHDRAWAL),
+    ("Electronic or Online Withdrawal Over Your Chosen Alert Limit", SCHEMA_ACH_WITHDRAWAL),
+    # TRANSFER — current + older backfill. # REFINE (no raw HTML fixture).
+    ("online transfer occurred over the limit you set", SCHEMA_TRANSFER),
+    ("Online Transfer Over Your Chosen Alert Limit", SCHEMA_TRANSFER),
+    # DEBIT-CARD-USED — current + older backfill. # REFINE (no raw HTML fixture).
+    ("your debit card was used", SCHEMA_DEBITCARD_USED),
+    ("Debit Card Used Online, by Phone or by Mail", SCHEMA_DEBITCARD_USED),
 )
 
 
@@ -119,45 +120,43 @@ def schema_for_subject(subject: str) -> str | None:
     return None
 
 
-# --- Per-schema label maps -------------------------------------------------
+# --- Per-schema field -> candidate label maps ------------------------------
 #
-# Each label list is tried in order; the first that resolves wins. Labels are
-# matched at the start of a rendered line (see ``_label_value``), tolerant of
-# ``:``/``-`` separators and of the value living on the following line.
+# Keys are lower-cased data-table labels as they appear in the LABEL ``<td>``.
+# Each field lists candidate labels tried in order (first present wins), so the
+# modern label and any older-format label are both accepted for backfill.
 
 _SINGLE_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
-    SCHEMA_DEBITCARD_OVERLIMIT: {
-        "amount": ("Amount",),
-        "last4": ("Debit/ATM card", "Debit/ATM Card"),
-        "merchant": ("Where",),
-        "txn_type": ("Transaction type",),
-        "date": ("When",),
+    SCHEMA_CARD: {
+        "amount": ("amount",),
+        "last4": ("debit/atm card",),
+        "merchant": ("merchant", "where"),
+        "txn_type": ("transaction type",),
+        "date": ("date", "when"),
     },
     SCHEMA_ACH_WITHDRAWAL: {
-        "amount": ("Amount",),
-        "last4": ("Account",),  # nickname + last4, e.g. "Ad Buys 0353 - 0353"
-        "merchant": ("Merchant",),
-        "txn_type": ("Type",),
-        "date": ("Transaction date",),
+        "amount": ("amount",),
+        "last4": ("account",),  # nickname + last4, e.g. "Ad Buys 0353 - 0353"
+        "merchant": ("merchant",),
+        "txn_type": ("type",),
+        "date": ("transaction date", "date"),
     },
-    # REFINE: heuristic — validated only against rendered fields, not raw HTML.
-    SCHEMA_CURRENT_VARIANT: {
-        "amount": ("Amount",),
-        "last4": ("Debit/ATM card", "Debit/ATM Card"),
-        "merchant": ("Merchant",),
-        "txn_type": ("Transaction type",),
-        "date": ("Date",),
+    # Transfer alerts carry no merchant/type; only amount + account + date. # REFINE
+    SCHEMA_TRANSFER: {
+        "amount": ("amount",),
+        "last4": ("account",),  # e.g. "ending in 0353"
+        "date": ("transaction date", "date"),
     },
 }
 
-# The batched debit-card-used block labels (one block per "Account:" line).
+# The batched debit-card-used block labels (one block per "Account" row). # REFINE
 _USED_BLOCK_LABELS: dict[str, tuple[str, ...]] = {
-    "amount": ("Amount",),
-    "last4": ("Account",),  # "Debit card ending in 7625"
-    "merchant": ("Made at",),
-    "date": ("On",),
+    "amount": ("amount",),
+    "last4": ("account",),  # "Debit card ending in 7625"
+    "merchant": ("made at", "merchant"),
+    "date": ("on", "date"),
 }
-_USED_BLOCK_LABEL = "Account"
+_USED_BLOCK_LABEL = "account"
 
 # --- Field-extraction regexes ----------------------------------------------
 
@@ -169,17 +168,18 @@ _USED_BLOCK_LABEL = "Account"
 # mistaken for a quantity/count.
 _AMOUNT_RE = re.compile(r"\$\s*(\d[\d,]*)(?:\.(\d{2}))?\d*")
 
-# Card/account last-4. Prefers an explicit "ending in <digits>"; otherwise the
-# trailing 4-digit run (handles "Ad Buys 0353 - 0353" -> 0353).
+# Card/account last-4. Prefers an explicit "ending in <digits>" (no dash OR an
+# older "ending in - 5723"); otherwise the trailing 4-digit run (handles
+# "Ad Buys 0353 - 0353" -> 0353), then any 4-digit run.
 _ENDING_IN_RE = re.compile(r"ending in[\s:\-]*?(\d{3,})", re.IGNORECASE)
 _TRAILING4_RE = re.compile(r"(\d{4})\D*$")
 _ANY4_RE = re.compile(r"(\d{4})")
 
-# Dates in the shapes BofA uses. # REFINE (kept broad for the heuristic variants)
+# Dates in the shapes BofA uses.
 _DATE_RE = re.compile(
     r"("
     r"\d{1,2}/\d{1,2}/\d{2,4}"                       # 07/07/2026 or 7/7/26
-    r"|[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}"           # July 07, 2024
+    r"|[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}"           # July 08, 2026
     r"|\d{4}-\d{2}-\d{2}"                            # 2026-07-07
     r")"
 )
@@ -222,10 +222,66 @@ class EmailTxn:
         return email_scan_source_txn_id(self.message_id, self.block_index)
 
 
+# --- HTML table-cell pairing (bs4) -----------------------------------------
+
+
+def _collapse_ws(value: str | None) -> str:
+    """Collapse ALL runs of internal whitespace to a single space; strip ends."""
+    if not value:
+        return ""
+    return " ".join(value.split())
+
+
+def extract_pairs(html: str) -> list[tuple[str, str]]:
+    """Pair the two-column data-table cells of a BofA alert: (label, value).
+
+    BofA renders each field as a table row with exactly two direct ``<td>``
+    children — a LABEL cell and a VALUE cell (value usually in ``<b>``). This
+    walks every ``<tr>``, keeps rows with exactly two direct ``<td>`` children,
+    and returns ``(label, value)`` in document order with internal whitespace
+    collapsed. Layout rows (single cell, or nested tables) are skipped; junk
+    two-cell rows are harmless because callers look up specific labels.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    pairs: list[tuple[str, str]] = []
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all("td", recursive=False)
+        if len(cells) != 2:
+            continue
+        label = _collapse_ws(cells[0].get_text(" ", strip=True))
+        value = _collapse_ws(cells[1].get_text(" ", strip=True))
+        if label and value:
+            pairs.append((label, value))
+    return pairs
+
+
+def _label_key(label: str) -> str:
+    """Normalize a label cell to its lookup key (lower-cased, trailing ':' off)."""
+    return _collapse_ws(label).lower().rstrip(":").strip()
+
+
+def pairs_to_map(pairs: list[tuple[str, str]]) -> dict[str, str]:
+    """Collapse ordered (label, value) pairs into a first-wins label->value map."""
+    out: dict[str, str] = {}
+    for label, value in pairs:
+        out.setdefault(_label_key(label), value)
+    return out
+
+
+def _first(field_map: dict[str, str], labels: tuple[str, ...]) -> str | None:
+    """Return the first present label's value from ``field_map``."""
+    for label in labels:
+        if label in field_map:
+            return field_map[label]
+    return None
+
+
 # --- Parsing helpers -------------------------------------------------------
 
 
-def parse_amount(text: str) -> Decimal | None:
+def parse_amount(text: str | None) -> Decimal | None:
     """Return the dollar amount in ``text`` as a Decimal (unsigned).
 
     Handles both "$ 856.00" and "$1,487.50", strips ``$``/spaces/commas, and
@@ -242,7 +298,7 @@ def parse_amount(text: str) -> Decimal | None:
         return None
 
 
-def parse_date(text: str, fallback: date | None = None) -> date | None:
+def parse_date(text: str | None, fallback: date | None = None) -> date | None:
     """Return the first parseable date in ``text``, else ``fallback``."""
     m = _DATE_RE.search(text or "")
     if m:
@@ -255,11 +311,11 @@ def parse_date(text: str, fallback: date | None = None) -> date | None:
     return fallback
 
 
-def parse_last4(text: str) -> str | None:
+def parse_last4(text: str | None) -> str | None:
     """Extract a 4-digit card/account tail from ``text``.
 
-    Prefers "ending in <digits>" (taking its last 4); falls back to a trailing
-    4-digit run, then any 4-digit run.
+    Prefers "ending in <digits>" (taking its last 4; tolerates a dash such as
+    "ending in - 5723"); falls back to a trailing 4-digit run, then any run.
     """
     text = text or ""
     m = _ENDING_IN_RE.search(text)
@@ -292,87 +348,42 @@ def _clean_type(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _line_is_label(line: str, label: str) -> bool:
-    """True if a stripped line is ``label`` immediately followed by a ``:``/``-``.
-
-    A real separator is REQUIRED so a block label like ``Account`` does not
-    falsely match a heading such as ``Account Alert: ...`` (the ``Account:``
-    block delimiter always carries the separator).
-    """
-    return bool(
-        re.match(rf"{re.escape(label)}\s*[:\-]", line.strip(), re.IGNORECASE)
-    )
-
-
-def _looks_like_label(line: str) -> bool:
-    """Heuristic: a bare label line (short and ending in ':')."""
-    s = line.strip()
-    return s.endswith(":") and len(s) <= 40
-
-
-def _label_value(text: str, labels: tuple[str, ...]) -> str | None:
-    """Return the value for the first matching label in ``text``.
-
-    Matches ``Label: value`` / ``Label - value`` / ``Label value`` at the start
-    of a line (tolerant of HTML-rendered spacing). If the value is empty on the
-    label line (label and value rendered on separate lines), the next non-empty,
-    non-label line is used instead.
-    """
-    lines = (text or "").splitlines()
-    for label in labels:
-        pattern = re.compile(rf"^{re.escape(label)}\s*[:\-]?\s*(.*)$", re.IGNORECASE)
-        for i, raw_line in enumerate(lines):
-            line = raw_line.strip()
-            if not line.lower().startswith(label.lower()):
-                continue
-            m = pattern.match(line)
-            if not m:
-                continue
-            value = m.group(1).strip()
-            if value:
-                return value
-            # Value likely on the following line(s).
-            for nxt in lines[i + 1:]:
-                nxt = nxt.strip()
-                if not nxt:
-                    continue
-                if _looks_like_label(nxt):
-                    break
-                return nxt
-    return None
-
-
 # --- Schema parsers --------------------------------------------------------
 
 
-def parse_single(
-    text: str, schema: str, message_id: str, fallback_date: date | None
+def parse_paired(
+    html: str, schema: str, message_id: str, fallback_date: date | None
 ) -> EmailTxn | None:
-    """Parse a single-transaction alert body using ``schema``'s label map.
+    """Parse a single-transaction alert from paired HTML cells using ``schema``.
 
-    Returns ``None`` if the mandatory fields (amount + date) cannot be found.
+    Fail-closed: only the labeled data-cell value is used, never a whole-body
+    scan (which could grab the alert LIMIT figure or a stray date). Returns
+    ``None`` if the mandatory fields (amount + date) cannot be found.
     """
-    labels = _SINGLE_SCHEMAS[schema]
+    spec = _SINGLE_SCHEMAS[schema]
+    field_map = pairs_to_map(extract_pairs(html))
 
-    # Fail-closed: only parse the labeled value, never the whole body. Scanning
-    # the entire body risks grabbing the alert LIMIT figure instead of the
-    # transaction amount (or an unrelated date), so a missing label yields None.
-    amount_raw = _label_value(text, labels["amount"])
+    amount_raw = _first(field_map, spec["amount"])
     amount = parse_amount(amount_raw) if amount_raw is not None else None
-    date_raw = _label_value(text, labels["date"])
+    date_raw = _first(field_map, spec["date"])
     posted = parse_date(date_raw, fallback_date) if date_raw is not None else fallback_date
-    merchant = _clean_merchant(_label_value(text, labels.get("merchant", ())))
-    last4 = parse_last4(_label_value(text, labels.get("last4", ())) or "")
-    txn_type = _clean_type(_label_value(text, labels.get("txn_type", ())))
+    merchant = _clean_merchant(_first(field_map, spec.get("merchant", ())))
+    last4 = parse_last4(_first(field_map, spec.get("last4", ())))
+    txn_type = _clean_type(_first(field_map, spec.get("txn_type", ())))
 
     if amount is None:
         log.warning(
-            "email-scan %s parse-miss (no amount label) for message %s",
+            "email-scan %s parse-miss (no amount cell) for message %s",
             schema,
             message_id,
         )
         return None
     if posted is None:
+        log.warning(
+            "email-scan %s parse-miss (no date cell) for message %s",
+            schema,
+            message_id,
+        )
         return None
 
     return EmailTxn(
@@ -386,48 +397,53 @@ def parse_single(
         block_index=None,
         raw={
             "schema": schema,
-            "merchant_raw": _label_value(text, labels.get("merchant", ())),
-            "amount_raw": str(amount),
+            "merchant_raw": _first(field_map, spec.get("merchant", ())),
+            "amount_raw": amount_raw,
         },
     )
 
 
-def _split_blocks(text: str, block_label: str) -> list[str]:
-    """Split ``text`` into blocks that each start at a ``block_label`` line.
+def _split_pair_blocks(
+    pairs: list[tuple[str, str]], block_label: str
+) -> list[dict[str, str]]:
+    """Split ordered pairs into per-transaction blocks starting at ``block_label``.
 
-    Used for BATCHED alerts: every ``Account:`` line begins a new transaction
-    block that runs until the next ``Account:`` line (no delimiter character).
+    Used for BATCHED alerts: every ``Account`` row begins a new block that runs
+    until the next ``Account`` row. Each block is a first-wins label->value map.
     """
-    lines = (text or "").splitlines()
-    starts = [i for i, ln in enumerate(lines) if _line_is_label(ln, block_label)]
-    if not starts:
-        return []
-    blocks: list[str] = []
-    for j, start in enumerate(starts):
-        end = starts[j + 1] if j + 1 < len(starts) else len(lines)
-        blocks.append("\n".join(lines[start:end]))
+    blocks: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for label, value in pairs:
+        key = _label_key(label)
+        if key == block_label:
+            current = {}
+            blocks.append(current)
+        if current is not None:
+            current.setdefault(key, value)
     return blocks
 
 
 def parse_debitcard_used(
-    text: str, message_id: str, fallback_date: date | None
+    html: str, message_id: str, fallback_date: date | None
 ) -> list[EmailTxn]:
-    """Parse the SCHEMA-DEBITCARD-USED alert (single OR batched).
+    """Parse the SCHEMA-DEBITCARD-USED alert (single OR batched). # REFINE.
 
-    Loops over every ``Account:`` block. A single-block email yields one txn
-    with ``block_index=None`` (``source_txn_id == message_id``); a multi-block
-    email yields one txn per block with ``block_index=i``
-    (``source_txn_id == f"{message_id}:{i}"``).
+    Loops over every ``Account`` block. A single-block email yields one txn with
+    ``block_index=None`` (``source_txn_id == message_id``); a multi-block email
+    yields one txn per block with ``block_index=i``
+    (``source_txn_id == f"{message_id}:{i}"``). Fail-closed per block: a block
+    with no amount or no resolvable date is skipped (never fabricated). No raw
+    HTML fixture exists yet, so the block structure is assumed from the older
+    text layout.
     """
-    blocks = _split_blocks(text, _USED_BLOCK_LABEL)
+    blocks = _split_pair_blocks(extract_pairs(html), _USED_BLOCK_LABEL)
     if not blocks:
         return []
 
     multi = len(blocks) > 1
     txns: list[EmailTxn] = []
     for i, block in enumerate(blocks):
-        # Fail-closed: parse only the labeled value, never the whole block/body.
-        amount_raw = _label_value(block, _USED_BLOCK_LABELS["amount"])
+        amount_raw = _first(block, _USED_BLOCK_LABELS["amount"])
         amount = parse_amount(amount_raw) if amount_raw is not None else None
         if amount is None:
             log.warning(
@@ -437,9 +453,9 @@ def parse_debitcard_used(
                 message_id,
             )
             continue
-        last4 = parse_last4(_label_value(block, _USED_BLOCK_LABELS["last4"]) or "")
-        merchant = _clean_merchant(_label_value(block, _USED_BLOCK_LABELS["merchant"]))
-        date_raw = _label_value(block, _USED_BLOCK_LABELS["date"])
+        last4 = parse_last4(_first(block, _USED_BLOCK_LABELS["last4"]))
+        merchant = _clean_merchant(_first(block, _USED_BLOCK_LABELS["merchant"]))
+        date_raw = _first(block, _USED_BLOCK_LABELS["date"])
         posted = (
             parse_date(date_raw, fallback_date) if date_raw is not None else fallback_date
         )
@@ -462,23 +478,27 @@ def parse_debitcard_used(
                 message_id=message_id,
                 schema=SCHEMA_DEBITCARD_USED,
                 block_index=(i if multi else None),
-                raw={"schema": SCHEMA_DEBITCARD_USED, "block_raw": block},
+                raw={"schema": SCHEMA_DEBITCARD_USED, "block_index": i},
             )
         )
     return txns
 
 
 def parse_message(
-    text: str, subject: str, message_id: str, fallback_date: date | None
+    html: str, subject: str, message_id: str, fallback_date: date | None
 ) -> list[EmailTxn]:
-    """Route a message body to its schema parser. Returns 0..N transactions."""
+    """Route a message (raw HTML) to its schema parser. Returns 0..N txns.
+
+    Classification is by case-insensitive SUBSTRING match of the RAW ``Subject``
+    header against ``SUBJECT_ROUTES``.
+    """
     schema = schema_for_subject(subject)
     if schema is None:
         log.warning("email-scan unroutable subject for %s: %r", message_id, subject)
         return []
     if schema == SCHEMA_DEBITCARD_USED:
-        return parse_debitcard_used(text, message_id, fallback_date)
-    txn = parse_single(text, schema, message_id, fallback_date)
+        return parse_debitcard_used(html, message_id, fallback_date)
+    txn = parse_paired(html, schema, message_id, fallback_date)
     return [txn] if txn else []
 
 
@@ -554,11 +574,21 @@ def insert_transactions(session, txns: list[EmailTxn]) -> tuple[int, int]:
 # --- Gmail orchestration ---------------------------------------------------
 
 
-def build_query(subject: str, lookback_days: int, today: date | None = None) -> str:
-    """Build a date-bounded Gmail query for one alert subject."""
+def build_query(lookback_days: int, today: date | None = None) -> str:
+    """Build the broad, date-bounded scan query.
+
+    A single SENDER query (``from:<BofA sender>``) bounded by ``after:<epoch>``
+    replaces the brittle per-route ``subject:"..."`` phrase queries, which
+    under-match (Gmail's phrase operator drops alerts). Every returned message is
+    then classified by its RAW subject substring. ``after:`` uses epoch SECONDS
+    (unambiguous across time zones).
+    """
     today = today or datetime.now(timezone.utc).date()
     after = today - timedelta(days=max(0, lookback_days))
-    return f'subject:"{subject}" after:{after:%Y/%m/%d}'
+    epoch = int(
+        datetime(after.year, after.month, after.day, tzinfo=timezone.utc).timestamp()
+    )
+    return f"from:{BOFA_SENDER} after:{epoch}"
 
 
 def _message_date(message: dict) -> date | None:
@@ -575,28 +605,34 @@ def _message_date(message: dict) -> date | None:
 
 
 def scan_messages(service, lookback_days: int, today: date | None = None) -> list[EmailTxn]:
-    """Search + fetch + parse every routed alert subject. Returns all txns.
+    """Search + fetch + classify + parse BofA alerts. Returns all txns.
 
-    Pure of any DB access — the network side is fully isolated here so parsing
-    and insertion can be tested offline. Each route in ``SUBJECT_ROUTES`` is
-    queried; the returned messages are parsed with the route's schema.
+    MESSAGE-LEVEL iteration: one broad sender query is run, then EACH returned
+    message is fetched, classified by its raw ``Subject`` header, and parsed from
+    its raw HTML body. Distinct message ids (even within one thread) yield
+    distinct rows. Pure of any DB access so parsing/insertion can be tested
+    offline.
     """
     from ..gmail import client as gmail_client
 
+    query = build_query(lookback_days, today)
+    log.info("email-scan query: %s", query)
+
     all_txns: list[EmailTxn] = []
-    for subject, schema in SUBJECT_ROUTES:
-        query = build_query(subject, lookback_days, today)
-        log.info("email-scan query [%s]: %s", schema, query)
-        for stub in gmail_client.search_messages(service, query):
-            msg_id = stub["id"]
-            message = gmail_client.get_message(service, msg_id)
-            body = gmail_client.get_body_text(message)
-            fallback = _message_date(message)
-            parsed = parse_message(body, subject, msg_id, fallback)
-            if parsed:
-                all_txns.extend(parsed)
-            else:
-                log.warning("email-scan parse miss [%s] for message %s", schema, msg_id)
+    for stub in gmail_client.search_messages(service, query):
+        msg_id = stub["id"]
+        message = gmail_client.get_message(service, msg_id)
+        headers = gmail_client.get_headers(message)
+        subject = headers.get("subject", "")
+        html = gmail_client.get_html_body(message)
+        fallback = _message_date(message)
+        parsed = parse_message(html, subject, msg_id, fallback)
+        if parsed:
+            all_txns.extend(parsed)
+        else:
+            log.warning(
+                "email-scan parse miss for message %s (subject=%r)", msg_id, subject
+            )
     return all_txns
 
 

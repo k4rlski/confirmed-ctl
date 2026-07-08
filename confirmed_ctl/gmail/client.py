@@ -47,12 +47,23 @@ def search_messages(
     """Yield message stubs (``{id, threadId}``) matching ``query``.
 
     Paginates automatically through ``users().messages().list``. Read-only.
+
+    ``includeSpamTrash=True`` is REQUIRED: BofA transaction alerts to
+    ``info@perm-ads.com`` are auto-filtered into **Trash**, which
+    ``users().messages().list`` excludes by default — so without this flag the
+    scan silently returns nothing. Read-only access to Trash does not modify or
+    restore anything.
     """
     page_token = None
     fetched = 0
     while fetched < max_results:
         batch = min(500, max_results - fetched)
-        params = {"userId": "me", "q": query, "maxResults": batch}
+        params = {
+            "userId": "me",
+            "q": query,
+            "maxResults": batch,
+            "includeSpamTrash": True,
+        }
         if page_token:
             params["pageToken"] = page_token
         resp = service.users().messages().list(**params).execute()
@@ -82,6 +93,20 @@ def get_headers(message: dict) -> dict:
     for h in message.get("payload", {}).get("headers", []):
         headers[h["name"].lower()] = h["value"]
     return headers
+
+
+def get_html_body(message: dict) -> str:
+    """Return the RAW ``text/html`` body of a (possibly multipart) message.
+
+    BofA alerts are HTML-only; the email-scan parser wants the raw HTML (not a
+    flattened text rendering) so it can pair the two-column data-table cells
+    (label ``<td>`` -> value ``<td>``) with BeautifulSoup. Falls back to any
+    ``text/plain`` part when no HTML part exists. Read-only.
+    """
+    html = _extract_part(message.get("payload", {}), "text/html")
+    if html:
+        return html
+    return _extract_part(message.get("payload", {}), "text/plain")
 
 
 def get_body_text(message: dict) -> str:
@@ -165,6 +190,7 @@ def search_threads_by_ad_number(ad_number: str, max_results: int = 5) -> list[di
         userId="me",
         q=query,
         maxResults=max_results,
+        includeSpamTrash=True,  # BofA/ad threads can be auto-filtered to Trash
     ).execute()
 
     threads = result.get("threads", [])

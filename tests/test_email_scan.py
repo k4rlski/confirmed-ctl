@@ -7,331 +7,254 @@ uses (``query().filter_by().first()``, ``add``, ``begin_nested``, ``flush``,
 ``commit``) and enforces the ``(source, source_txn_id)`` uniqueness that the
 real ``uq_bank_transactions_source_txn`` constraint provides.
 
-Fixture bodies below are the REAL BofA alert layouts (rendered to plain text as
-``gmail.client.get_body_text`` would produce from the HTML-only bodies).
+The CARD and ACH fixtures are the REAL BofA alert HTML bodies (saved under
+``tests/fixtures/``), so the bs4 table-cell parser is exercised against the
+exact markup BofA sends. TRANSFER and DEBIT-CARD-USED have no raw sample yet, so
+they use small BofA-shaped synthetic HTML (# REFINE).
 """
 
+import pathlib
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from confirmed_ctl.gmail.client import get_body_text, html_to_text
+from confirmed_ctl.gmail import client as gmail_client
 from confirmed_ctl.ingest.dedup import email_scan_source_txn_id
 from confirmed_ctl.ingest.email_scan import (
+    BOFA_SENDER,
     SCHEMA_ACH_WITHDRAWAL,
-    SCHEMA_CURRENT_VARIANT,
-    SCHEMA_DEBITCARD_OVERLIMIT,
+    SCHEMA_CARD,
     SCHEMA_DEBITCARD_USED,
+    SCHEMA_TRANSFER,
     build_query,
+    extract_pairs,
     insert_transactions,
+    pairs_to_map,
     parse_amount,
     parse_debitcard_used,
     parse_last4,
     parse_message,
-    parse_single,
+    parse_paired,
     run_email_scan,
     scan_messages,
     schema_for_subject,
 )
 
-# --- Real subjects ---------------------------------------------------------
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+CARD_HTML = (FIXTURES / "card_transaction_over_limit.html").read_text(encoding="utf-8")
+ACH_HTML = (FIXTURES / "ach_withdrawal_over_limit.html").read_text(encoding="utf-8")
 
-SUBJ_OVERLIMIT = (
+# --- Real subjects (raw Subject header text) -------------------------------
+
+SUBJ_CARD = "A transaction occurred over the limit you set"
+SUBJ_CARD_OLD = (
     "Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit"
 )
-SUBJ_USED = "Account Alert: Debit Card Used Online, by Phone or by Mail"
 SUBJ_ACH = "A withdrawal was made over the limit you set"
-SUBJ_CURRENT = "A transaction occurred over the limit you set"
-SUBJ_ELEC = (
+SUBJ_ACH_OLD = (
     "Activity Alert: Electronic or Online Withdrawal Over Your Chosen Alert Limit"
 )
 SUBJ_TRANSFER = "Online transfer occurred over the limit you set"
+SUBJ_TRANSFER_OLD = "Activity Alert: Online Transfer Over Your Chosen Alert Limit"
+SUBJ_USED = "Your debit card was used"
+SUBJ_USED_OLD = "Account Alert: Debit Card Used Online, by Phone or by Mail"
 
-# --- Real fixture bodies (post HTML->text) ---------------------------------
+# --- Synthetic BofA-shaped HTML for the # REFINE schemas -------------------
 
-# SCHEMA-DEBITCARD-OVERLIMIT — per transaction; "$ 856.00" (space, no comma).
-OVERLIMIT_BODY = """Bank of America
 
-Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit
+def _row(label: str, value: str) -> str:
+    """A BofA-style two-cell data row (label <td> + value <td> in <b>)."""
+    return f"<tr><td>{label}</td><td><b>{value}</b></td></tr>"
 
-Amount: $ 856.00
-Debit/ATM card: ending in - 5723
-Where: at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA
-Transaction type: PURCH W/O PIN
-When: on July 07, 2024
 
-View details in Online Banking.
-"""
+TRANSFER_HTML = (
+    "<html><body><table>"
+    + _row("Amount", "$1,200.00")
+    + _row("Account", "ending in 0353")
+    + _row("Transaction date", "July 08, 2026")
+    + "</table></body></html>"
+)
 
-# SCHEMA-DEBITCARD-USED — SINGLE; note the footnote superscript "1" on the amount.
-USED_SINGLE_BODY = """Bank of America
+USED_SINGLE_HTML = (
+    "<html><body><table>"
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 15.001")  # footnote superscript "1" -> ignored
+    + _row("Made at", "BUFFER PUBLISH PRO MO   -+14152955970  ,CA")
+    + _row("On", "August 13, 2024")
+    + "</table></body></html>"
+)
 
-Account Alert: Debit Card Used Online, by Phone or by Mail
+USED_BATCH_HTML = (
+    "<html><body><table>"
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 15.00")
+    + _row("Made at", "BUFFER PUBLISH PRO MO -+14152955970 ,CA")
+    + _row("On", "August 13, 2024")
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 42.99")
+    + _row("Made at", "AMAZON MKTPL AMZN.COM -SEATTLE ,WA")
+    + _row("On", "August 13, 2024")
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 5.00")
+    + _row("Made at", "OPENAI CHATGPT -+14158799686 ,CA")
+    + _row("On", "August 12, 2024")
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 120.50")
+    + _row("Made at", "META ADS -MENLO PARK ,CA")
+    + _row("On", "August 12, 2024")
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 8.25")
+    + _row("Made at", "SPOTIFY USA -NEW YORK ,NY")
+    + _row("On", "August 11, 2024")
+    + "</table></body></html>"
+)
 
-Account: Debit card ending in 7625
-Amount: $ 15.001
-Made at: BUFFER PUBLISH PRO MO -+14152955970 ,CA
-On: August 13, 2024
+# Older-format CARD HTML: dash last4 + Where/When labels (backfill tolerance).
+CARD_OLD_HTML = (
+    "<html><body><table>"
+    + _row("Amount", "$ 856.00")
+    + _row("Debit/ATM card", "ending in - 5723")
+    + _row("Where", "at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA")
+    + _row("Transaction type", "PURCH W/O PIN")
+    + _row("When", "July 07, 2024")
+    + "</table></body></html>"
+)
 
-View details in Online Banking.
-"""
-
-# SCHEMA-DEBITCARD-USED — BATCHED; the Account/Amount/Made at/On block repeats.
-USED_BATCH_BODY = """Bank of America
-
-Account Alert: Debit Card Used Online, by Phone or by Mail
-
-Account: Debit card ending in 7625
-Amount: $ 15.00
-Made at: BUFFER PUBLISH PRO MO -+14152955970 ,CA
-On: August 13, 2024
-
-Account: Debit card ending in 7625
-Amount: $ 42.99
-Made at: AMAZON MKTPL AMZN.COM -SEATTLE ,WA
-On: August 13, 2024
-
-Account: Debit card ending in 7625
-Amount: $ 5.00
-Made at: OPENAI CHATGPT -+14158799686 ,CA
-On: August 12, 2024
-
-Account: Debit card ending in 7625
-Amount: $ 120.50
-Made at: META ADS -MENLO PARK ,CA
-On: August 12, 2024
-
-Account: Debit card ending in 7625
-Amount: $ 8.25
-Made at: SPOTIFY USA -NEW YORK ,NY
-On: August 11, 2024
-
-View details in Online Banking.
-"""
-
-# SCHEMA-ACH-WITHDRAWAL — "$1,487.50" (comma thousands, no space after $), no card.
-ACH_BODY = """Bank of America
-
-A withdrawal was made over the limit you set
-
-Amount $1,487.50
-Type ELEC DRAFT (ACH)
-Account Ad Buys 0353 - 0353
-Merchant AUDACY PURCHASE
-Transaction date June 13, 2025
-
-View details in Online Banking.
-"""
-
-# SCHEMA-CURRENT-VARIANT — # REFINE (rendered fields only, no raw HTML sample).
-CURRENT_BODY = """Bank of America
-
-A transaction occurred over the limit you set
-
-Amount $2,000.00
-Debit/ATM card ending in 5723
-Merchant SA EXPRESS NEWS ADV -SAN ANTONIO ,TX
-Transaction type PURCH W/O PIN
-Date July 07, 2026
-
-View details in Online Banking.
-"""
-
-# A raw HTML-only body (BofA-style table) to exercise html_to_text/get_body_text.
-OVERLIMIT_HTML = """<html><body>
-<table>
-<tr><td>Amount:</td><td>$&nbsp;856.00</td></tr>
-<tr><td>Debit/ATM card:</td><td>ending in - 5723</td></tr>
-<tr><td>Where:</td><td>at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA</td></tr>
-<tr><td>Transaction type:</td><td>PURCH W/O PIN</td></tr>
-<tr><td>When:</td><td>on July 07, 2024</td></tr>
-</table>
-</body></html>"""
-
-MSG_OVERLIMIT = "msgOVER111"
+MSG_CARD = "msgCARD111"
+MSG_ACH = "msgACH333"
+MSG_TRANSFER = "msgXFER222"
 MSG_USED_SINGLE = "msgUSED1s"
 MSG_USED_BATCH = "msgUSEDbat"
-MSG_ACH = "msgACH333"
-MSG_CURRENT = "msgCUR444"
 
 
 # --- Subject routing -------------------------------------------------------
 
 
-def test_subject_routing_table():
-    assert schema_for_subject(SUBJ_OVERLIMIT) == SCHEMA_DEBITCARD_OVERLIMIT
-    assert schema_for_subject(SUBJ_USED) == SCHEMA_DEBITCARD_USED
+def test_subject_routing_current_and_backfill():
+    assert schema_for_subject(SUBJ_CARD) == SCHEMA_CARD
+    assert schema_for_subject(SUBJ_CARD_OLD) == SCHEMA_CARD
     assert schema_for_subject(SUBJ_ACH) == SCHEMA_ACH_WITHDRAWAL
-    assert schema_for_subject(SUBJ_CURRENT) == SCHEMA_CURRENT_VARIANT
-    # Best-effort ACH-shaped routes go to the ACH withdrawal parser (S2).
-    assert schema_for_subject(SUBJ_ELEC) == SCHEMA_ACH_WITHDRAWAL
-    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_ACH_WITHDRAWAL
-    # Case-insensitive.
-    assert schema_for_subject(SUBJ_ACH.upper()) == SCHEMA_ACH_WITHDRAWAL
-    # Unknown subject → no route.
+    assert schema_for_subject(SUBJ_ACH_OLD) == SCHEMA_ACH_WITHDRAWAL
+    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_TRANSFER
+    assert schema_for_subject(SUBJ_TRANSFER_OLD) == SCHEMA_TRANSFER
+    assert schema_for_subject(SUBJ_USED) == SCHEMA_DEBITCARD_USED
+    assert schema_for_subject(SUBJ_USED_OLD) == SCHEMA_DEBITCARD_USED
+
+
+def test_subject_routing_is_case_insensitive_substring():
+    # Real subjects arrive with extra prefixes/suffixes; substring match wins.
+    assert schema_for_subject(SUBJ_CARD.upper()) == SCHEMA_CARD
+    assert schema_for_subject("Fwd: " + SUBJ_ACH + " (info@)") == SCHEMA_ACH_WITHDRAWAL
     assert schema_for_subject("Your statement is ready") is None
+    assert schema_for_subject("") is None
 
 
-def test_s2_ach_shaped_subjects_route_to_ach():
-    """S2: the two ACH-shaped best-effort subjects go to the ACH schema."""
-    assert schema_for_subject(SUBJ_ELEC) == SCHEMA_ACH_WITHDRAWAL
-    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_ACH_WITHDRAWAL
-    # An ACH-shaped body under one of these subjects parses via the ACH schema.
-    txns = parse_message(ACH_BODY, SUBJ_ELEC, MSG_ACH, fallback_date=date(2025, 6, 13))
-    assert len(txns) == 1
-    assert txns[0].schema == SCHEMA_ACH_WITHDRAWAL
-    assert txns[0].amount == Decimal("-1487.50")
-
-
-# --- Amount cleaner (dual formats + footnote digit) ------------------------
+# --- Amount / last4 cleaners -----------------------------------------------
 
 
 def test_amount_cleaner_dual_formats_and_footnote():
     assert parse_amount("$ 856.00") == Decimal("856.00")       # space, no comma
     assert parse_amount("$1,487.50") == Decimal("1487.50")     # comma, no space
     assert parse_amount("$2,000.00") == Decimal("2000.00")
+    assert parse_amount("$255.00") == Decimal("255.00")
     assert parse_amount("$ 15.001") == Decimal("15.00")        # footnote "1" ignored
     assert parse_amount("$ 15.00") == Decimal("15.00")
     assert parse_amount("no dollar here") is None
+    assert parse_amount(None) is None
 
 
 def test_last4_extraction_variants():
-    assert parse_last4("ending in - 5723") == "5723"
+    assert parse_last4("ending in 5723") == "5723"             # no dash (current)
+    assert parse_last4("ending in - 5723") == "5723"           # older dash form
     assert parse_last4("Debit card ending in 7625") == "7625"
-    assert parse_last4("Ad Buys 0353 - 0353") == "0353"       # trailing run
-    assert parse_last4("ending in 5723") == "5723"
+    assert parse_last4("Ad Buys 0353 - 0353") == "0353"        # trailing run
+    assert parse_last4("ending in 0353") == "0353"
+    assert parse_last4(None) is None
 
 
-# --- SCHEMA-DEBITCARD-OVERLIMIT --------------------------------------------
+# --- bs4 table-cell pairing (real CARD fixture) ----------------------------
 
 
-def test_overlimit_field_extraction():
-    txn = parse_single(
-        OVERLIMIT_BODY, SCHEMA_DEBITCARD_OVERLIMIT, MSG_OVERLIMIT,
-        fallback_date=date(2024, 7, 7),
-    )
+def test_extract_pairs_bs4_cell_pairing_and_whitespace_collapse():
+    field_map = pairs_to_map(extract_pairs(CARD_HTML))
+    assert field_map["amount"] == "$2,000.00"
+    assert field_map["debit/atm card"] == "ending in 5723"     # no dash
+    assert field_map["transaction type"] == "PURCH W/O PIN"
+    assert field_map["date"] == "July 08, 2026"
+    # Merchant carries irregular multiple spaces in the raw HTML; collapsed here.
+    assert field_map["merchant"] == "SA EXPRESS NEWS ADV -SAN ANTONIO ,TX"
+    assert "  " not in field_map["merchant"]
+
+
+# --- CARD (real fixture) ---------------------------------------------------
+
+
+def test_card_field_extraction_real_fixture():
+    txn = parse_paired(CARD_HTML, SCHEMA_CARD, MSG_CARD, fallback_date=None)
     assert txn is not None
-    assert txn.amount == Decimal("-856.00")  # debit => negative (signed)
+    assert txn.amount == Decimal("-2000.00")   # debit => negative (signed)
     assert txn.amount < 0
     assert txn.last4 == "5723"
-    assert txn.merchant == "THE PHILADELPHIA INQUI-PHILADELPHIA ,PA"
+    assert txn.merchant == "SA EXPRESS NEWS ADV -SAN ANTONIO ,TX"
     assert txn.txn_type == "PURCH W/O PIN"
-    assert txn.posted_date == date(2024, 7, 7)
-    assert txn.schema == SCHEMA_DEBITCARD_OVERLIMIT
+    assert txn.posted_date == date(2026, 7, 8)
+    assert txn.schema == SCHEMA_CARD
     # Single alert => source_txn_id is the bare message id.
-    assert txn.source_txn_id == MSG_OVERLIMIT
-    assert txn.source_txn_id == email_scan_source_txn_id(MSG_OVERLIMIT)
+    assert txn.block_index is None
+    assert txn.source_txn_id == MSG_CARD
+    assert txn.source_txn_id == email_scan_source_txn_id(MSG_CARD)
 
 
-def test_overlimit_missing_mandatory_fields_returns_none():
-    txn = parse_single(
-        "no money, no date here", SCHEMA_DEBITCARD_OVERLIMIT, MSG_OVERLIMIT,
-        fallback_date=None,
-    )
-    assert txn is None
-
-
-# --- S1: fail-closed parsing (no whole-body fallback, no fabricated date) ---
-
-# Missing the "Amount:" label but the alert LIMIT figure IS present in the body.
-# The old whole-body fallback would grab $500.00 (the limit); fail-closed must
-# not, so the record is skipped rather than stored with a wrong amount.
-OVERLIMIT_NO_AMOUNT_LABEL_BODY = """Bank of America
-
-Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit
-
-Your chosen alert limit is $ 500.00
-Debit/ATM card: ending in - 5723
-Where: at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA
-When: on July 07, 2024
-
-View details in Online Banking.
-"""
-
-# Amount present, but the date label ("When:") is missing while a stray date
-# sits in a footer line. Fail-closed must not scan the body for that stray date.
-OVERLIMIT_NO_DATE_LABEL_BODY = """Bank of America
-
-Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit
-
-Amount: $ 856.00
-Debit/ATM card: ending in - 5723
-Where: at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA
-
-Message generated January 01, 2000.
-"""
-
-
-def test_fail_closed_missing_amount_label_skips_record():
-    # No "Amount:" label -> must NOT fall back to the body's LIMIT figure.
-    txn = parse_single(
-        OVERLIMIT_NO_AMOUNT_LABEL_BODY,
-        SCHEMA_DEBITCARD_OVERLIMIT,
-        MSG_OVERLIMIT,
-        fallback_date=date(2024, 7, 7),
-    )
-    assert txn is None  # skipped, not a wrong -$500.00 (the alert LIMIT)
-
-
-def test_fail_closed_missing_date_label_no_stray_body_date():
-    # Labeled date missing + no fallback => None (NOT the stray body date), so
-    # the mandatory-date rule skips the record.
-    txn = parse_single(
-        OVERLIMIT_NO_DATE_LABEL_BODY,
-        SCHEMA_DEBITCARD_OVERLIMIT,
-        MSG_OVERLIMIT,
-        fallback_date=None,
-    )
-    assert txn is None
-
-
-def test_fail_closed_missing_date_label_uses_fallback_not_stray():
-    # With a Gmail fallback date, the labeled lookup yields no value so the
-    # field takes the FALLBACK — never the stray "January 01, 2000" in the body.
-    txn = parse_single(
-        OVERLIMIT_NO_DATE_LABEL_BODY,
-        SCHEMA_DEBITCARD_OVERLIMIT,
-        MSG_OVERLIMIT,
-        fallback_date=date(2024, 7, 7),
-    )
+def test_card_old_format_backfill_labels_and_dash_last4():
+    txn = parse_paired(CARD_OLD_HTML, SCHEMA_CARD, MSG_CARD, fallback_date=None)
     assert txn is not None
-    assert txn.posted_date == date(2024, 7, 7)
-    assert txn.posted_date != date(2000, 1, 1)
+    assert txn.amount == Decimal("-856.00")
+    assert txn.last4 == "5723"                 # older "ending in - 5723"
+    assert txn.merchant == "THE PHILADELPHIA INQUI-PHILADELPHIA ,PA"  # "at " dropped
+    assert txn.txn_type == "PURCH W/O PIN"
+    assert txn.posted_date == date(2024, 7, 7)  # via "When" backfill label
 
 
-# Batched block with an amount but NO "On:" date label and no fallback: the
-# block must be skipped, never fabricated with date.today() (N2 removed).
-USED_BLOCK_NO_DATE_BODY = """Bank of America
-
-Account Alert: Debit Card Used Online, by Phone or by Mail
-
-Account: Debit card ending in 7625
-Amount: $ 15.00
-Made at: BUFFER PUBLISH PRO MO -+14152955970 ,CA
-
-View details in Online Banking.
-"""
+# --- ACH WITHDRAWAL (real fixture) -----------------------------------------
 
 
-def test_fail_closed_batched_missing_date_skips_block_no_today():
-    txns = parse_debitcard_used(
-        USED_BLOCK_NO_DATE_BODY, MSG_USED_SINGLE, fallback_date=None
-    )
-    assert txns == []  # no fabricated date.today(); the block is skipped
+def test_ach_withdrawal_extraction_real_fixture():
+    txn = parse_paired(ACH_HTML, SCHEMA_ACH_WITHDRAWAL, MSG_ACH, fallback_date=None)
+    assert txn is not None
+    assert txn.amount == Decimal("-255.00")
+    assert txn.txn_type == "ELEC DRAFT (ACH)"
+    assert txn.last4 == "0353"                 # nickname + last4 "Ad Buys 0353 - 0353"
+    assert txn.merchant == "COXMEDIAGROUP WEBPAYMENT"   # collapsed multi-space
+    assert txn.posted_date == date(2026, 7, 8)
+    assert txn.schema == SCHEMA_ACH_WITHDRAWAL
 
 
-# --- SCHEMA-DEBITCARD-USED (single + batched) ------------------------------
+# --- TRANSFER (# REFINE synthetic) -----------------------------------------
+
+
+def test_transfer_extraction_tolerant_no_merchant_or_type():
+    txn = parse_paired(TRANSFER_HTML, SCHEMA_TRANSFER, MSG_TRANSFER, fallback_date=None)
+    assert txn is not None
+    assert txn.amount == Decimal("-1200.00")
+    assert txn.last4 == "0353"
+    assert txn.posted_date == date(2026, 7, 8)
+    assert txn.merchant is None                # transfers carry no merchant
+    assert txn.txn_type is None                # ...and no type
+    assert txn.schema == SCHEMA_TRANSFER
+
+
+# --- DEBIT-CARD-USED (# REFINE synthetic; single + batched) ----------------
 
 
 def test_used_single_footnote_and_single_id():
     txns = parse_debitcard_used(
-        USED_SINGLE_BODY, MSG_USED_SINGLE, fallback_date=date(2024, 8, 13)
+        USED_SINGLE_HTML, MSG_USED_SINGLE, fallback_date=date(2024, 8, 13)
     )
     assert len(txns) == 1
     t = txns[0]
-    assert t.amount == Decimal("-15.00")  # footnote "1" ignored, not 15.001
+    assert t.amount == Decimal("-15.00")       # footnote "1" ignored, not 15.001
     assert t.last4 == "7625"
     assert t.merchant == "BUFFER PUBLISH PRO MO -+14152955970 ,CA"
     assert t.posted_date == date(2024, 8, 13)
@@ -342,7 +265,7 @@ def test_used_single_footnote_and_single_id():
 
 def test_used_batched_yields_n_rows_with_distinct_ids():
     txns = parse_debitcard_used(
-        USED_BATCH_BODY, MSG_USED_BATCH, fallback_date=date(2024, 8, 13)
+        USED_BATCH_HTML, MSG_USED_BATCH, fallback_date=date(2024, 8, 13)
     )
     assert len(txns) == 5
     assert [t.amount for t in txns] == [
@@ -355,7 +278,6 @@ def test_used_batched_yields_n_rows_with_distinct_ids():
     assert all(t.last4 == "7625" for t in txns)
     assert "AMAZON MKTPL" in txns[1].merchant
     assert txns[2].posted_date == date(2024, 8, 12)
-    # Distinct message_id:i ids for each batched block.
     assert [t.source_txn_id for t in txns] == [
         f"{MSG_USED_BATCH}:0",
         f"{MSG_USED_BATCH}:1",
@@ -366,87 +288,97 @@ def test_used_batched_yields_n_rows_with_distinct_ids():
     assert len({t.source_txn_id for t in txns}) == 5
 
 
-# --- SCHEMA-ACH-WITHDRAWAL -------------------------------------------------
+# --- Fail-closed parsing ---------------------------------------------------
+
+# Amount cell missing but the alert LIMIT figure sits elsewhere in the body: a
+# whole-body scan would grab the limit; the cell-pairing parser must not.
+CARD_NO_AMOUNT_HTML = (
+    "<html><body>"
+    "<p>Your chosen alert limit is $ 500.00</p>"
+    "<table>"
+    + _row("Debit/ATM card", "ending in 5723")
+    + _row("Merchant", "SOME MERCHANT -CITY ,ST")
+    + _row("Date", "July 08, 2026")
+    + "</table></body></html>"
+)
+
+# Amount present, date cell missing, and a stray date in a footer paragraph.
+CARD_NO_DATE_HTML = (
+    "<html><body>"
+    + "<table>"
+    + _row("Amount", "$ 856.00")
+    + _row("Debit/ATM card", "ending in 5723")
+    + _row("Merchant", "SOME MERCHANT -CITY ,ST")
+    + "</table>"
+    + "<p>Message generated January 01, 2000.</p>"
+    + "</body></html>"
+)
 
 
-def test_ach_withdrawal_extraction():
-    txn = parse_single(
-        ACH_BODY, SCHEMA_ACH_WITHDRAWAL, MSG_ACH, fallback_date=date(2025, 6, 13)
+def test_fail_closed_missing_amount_cell_skips_record():
+    txn = parse_paired(
+        CARD_NO_AMOUNT_HTML, SCHEMA_CARD, MSG_CARD, fallback_date=date(2026, 7, 8)
+    )
+    assert txn is None  # not a wrong -$500.00 (the alert LIMIT)
+
+
+def test_fail_closed_missing_date_cell_no_stray_body_date():
+    txn = parse_paired(CARD_NO_DATE_HTML, SCHEMA_CARD, MSG_CARD, fallback_date=None)
+    assert txn is None  # never the stray "January 01, 2000"
+
+
+def test_fail_closed_missing_date_cell_uses_fallback_not_stray():
+    txn = parse_paired(
+        CARD_NO_DATE_HTML, SCHEMA_CARD, MSG_CARD, fallback_date=date(2026, 7, 8)
     )
     assert txn is not None
-    assert txn.amount == Decimal("-1487.50")  # comma thousands handled
-    assert txn.txn_type == "ELEC DRAFT (ACH)"
-    assert txn.last4 == "0353"  # nickname + last4 "Ad Buys 0353 - 0353"
-    assert txn.merchant == "AUDACY PURCHASE"
-    assert txn.posted_date == date(2025, 6, 13)
-    assert txn.schema == SCHEMA_ACH_WITHDRAWAL
+    assert txn.posted_date == date(2026, 7, 8)
+    assert txn.posted_date != date(2000, 1, 1)
 
 
-# --- SCHEMA-CURRENT-VARIANT (# REFINE) -------------------------------------
+# Batched block with an amount but no "On" date and no fallback: skip the block,
+# never fabricate date.today().
+USED_BLOCK_NO_DATE_HTML = (
+    "<html><body><table>"
+    + _row("Account", "Debit card ending in 7625")
+    + _row("Amount", "$ 15.00")
+    + _row("Made at", "BUFFER PUBLISH PRO MO -+14152955970 ,CA")
+    + "</table></body></html>"
+)
 
 
-def test_current_variant_extraction():
-    txn = parse_single(
-        CURRENT_BODY, SCHEMA_CURRENT_VARIANT, MSG_CURRENT,
-        fallback_date=date(2026, 7, 7),
+def test_fail_closed_batched_missing_date_skips_block_no_today():
+    txns = parse_debitcard_used(
+        USED_BLOCK_NO_DATE_HTML, MSG_USED_SINGLE, fallback_date=None
     )
-    assert txn is not None
-    assert txn.amount == Decimal("-2000.00")
-    assert txn.last4 == "5723"
-    assert txn.merchant == "SA EXPRESS NEWS ADV -SAN ANTONIO ,TX"
-    assert txn.txn_type == "PURCH W/O PIN"
-    assert txn.posted_date == date(2026, 7, 7)
+    assert txns == []  # no fabricated date.today(); the block is skipped
 
 
-# --- HTML-only body handling -----------------------------------------------
+# --- parse_message routing (classification by subject substring) -----------
 
 
-def test_html_to_text_strips_tags_and_entities():
-    text = html_to_text(OVERLIMIT_HTML)
-    assert "<td>" not in text
-    assert "<table>" not in text
-    assert "&nbsp;" not in text
-    assert "Amount:" in text
-    assert "856.00" in text
-
-
-def test_get_body_text_renders_html_only_message():
-    message = {
-        "payload": {
-            "mimeType": "text/html",
-            "body": _b64(OVERLIMIT_HTML),
-        }
-    }
-    text = get_body_text(message)
-    assert "<td>" not in text
-    # The rendered text is fully parseable by the over-limit schema.
-    txn = parse_single(
-        text, SCHEMA_DEBITCARD_OVERLIMIT, MSG_OVERLIMIT, fallback_date=None
-    )
-    assert txn is not None
-    assert txn.amount == Decimal("-856.00")
-    assert txn.last4 == "5723"
-    assert txn.merchant == "THE PHILADELPHIA INQUI-PHILADELPHIA ,PA"
-    assert txn.posted_date == date(2024, 7, 7)
-
-
-# --- parse_message routing -------------------------------------------------
-
-
-def test_parse_message_routes_by_subject():
-    assert len(parse_message(OVERLIMIT_BODY, SUBJ_OVERLIMIT, MSG_OVERLIMIT, None)) == 1
-    assert len(parse_message(USED_BATCH_BODY, SUBJ_USED, MSG_USED_BATCH, None)) == 5
-    assert len(parse_message(ACH_BODY, SUBJ_ACH, MSG_ACH, None)) == 1
-    assert parse_message("body", "Unknown subject", "m", None) == []
+def test_parse_message_routes_by_subject_substring():
+    assert len(parse_message(CARD_HTML, SUBJ_CARD, MSG_CARD, None)) == 1
+    assert len(parse_message(ACH_HTML, SUBJ_ACH, MSG_ACH, None)) == 1
+    assert len(parse_message(TRANSFER_HTML, SUBJ_TRANSFER, MSG_TRANSFER, None)) == 1
+    assert len(parse_message(USED_BATCH_HTML, SUBJ_USED, MSG_USED_BATCH, None)) == 5
+    # Older backfill subjects route the same way.
+    assert len(parse_message(ACH_HTML, SUBJ_ACH_OLD, MSG_ACH, None)) == 1
+    assert parse_message("<html></html>", "Unknown subject", "m", None) == []
 
 
 # --- Query building --------------------------------------------------------
 
 
-def test_build_query_is_date_bounded():
-    q = build_query(SUBJ_OVERLIMIT, lookback_days=2, today=date(2026, 7, 8))
-    assert f'subject:"{SUBJ_OVERLIMIT}"' in q
-    assert "after:2026/07/06" in q
+def test_build_query_is_broad_sender_and_epoch_bounded():
+    from datetime import datetime, timezone
+
+    q = build_query(lookback_days=2, today=date(2026, 7, 8))
+    assert q.startswith(f"from:{BOFA_SENDER} ")
+    assert 'subject:"' not in q  # NOT a brittle subject phrase query
+    # after: uses epoch SECONDS for the lookback start (2026-07-06 00:00 UTC).
+    epoch = int(datetime(2026, 7, 6, tzinfo=timezone.utc).timestamp())
+    assert f"after:{epoch}" in q
 
 
 # --- Fake DB session (no Postgres) -----------------------------------------
@@ -514,12 +446,12 @@ class FakeSession:
         self.pending = []
 
 
-# --- Insert idempotency ----------------------------------------------------
+# --- Insert idempotency + message-level distinct rows ----------------------
 
 
 def test_insert_batched_inserts_then_skips():
     session = FakeSession()
-    txns = parse_debitcard_used(USED_BATCH_BODY, MSG_USED_BATCH, date(2024, 8, 13))
+    txns = parse_debitcard_used(USED_BATCH_HTML, MSG_USED_BATCH, date(2024, 8, 13))
 
     inserted, skipped = insert_transactions(session, txns)
     assert (inserted, skipped) == (5, 0)
@@ -533,19 +465,69 @@ def test_insert_batched_inserts_then_skips():
 
 def test_same_message_parsed_twice_is_one_logical_row():
     session = FakeSession()
-    first = parse_single(
-        OVERLIMIT_BODY, SCHEMA_DEBITCARD_OVERLIMIT, MSG_OVERLIMIT, date(2024, 7, 7)
-    )
-    again = parse_single(
-        OVERLIMIT_BODY, SCHEMA_DEBITCARD_OVERLIMIT, MSG_OVERLIMIT, date(2024, 7, 7)
-    )
+    first = parse_paired(CARD_HTML, SCHEMA_CARD, MSG_CARD, date(2026, 7, 8))
+    again = parse_paired(CARD_HTML, SCHEMA_CARD, MSG_CARD, date(2026, 7, 8))
 
     insert_transactions(session, [first])
     insert_transactions(session, [again])
     assert len(session.store) == 1  # dedup on message-id-derived source_txn_id
 
 
-# --- End-to-end run (faked Gmail) ------------------------------------------
+def test_thread_grouped_messages_yield_distinct_rows():
+    """Same-thread, same-day alerts (distinct message ids) => distinct rows."""
+    session = FakeSession()
+    # Two messages that share a threadId but have different message ids.
+    a = parse_paired(CARD_HTML, SCHEMA_CARD, "threadA:msg1", date(2026, 7, 8))
+    b = parse_paired(CARD_HTML, SCHEMA_CARD, "threadA:msg2", date(2026, 7, 8))
+    assert a.source_txn_id != b.source_txn_id
+    inserted, skipped = insert_transactions(session, [a, b])
+    assert (inserted, skipped) == (2, 0)
+    assert len(session.store) == 2  # message-level iteration => one row per msg id
+
+
+# --- includeSpamTrash on the real search_messages -------------------------
+
+
+class _RecordingList:
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+    def list(self, **kwargs):
+        self._recorder.append(kwargs)
+
+        class _Exec:
+            def execute(self_inner):
+                # Empty result stops pagination after one call.
+                return {"messages": [], "nextPageToken": None}
+
+        return _Exec()
+
+
+class _RecordingUsers:
+    def __init__(self, recorder):
+        self._messages = _RecordingList(recorder)
+
+    def messages(self):
+        return self._messages
+
+
+class _RecordingService:
+    def __init__(self):
+        self.calls = []
+        self._users = _RecordingUsers(self.calls)
+
+    def users(self):
+        return self._users
+
+
+def test_search_messages_passes_include_spam_trash():
+    svc = _RecordingService()
+    list(gmail_client.search_messages(svc, "from:x after:1"))
+    assert svc.calls, "messages().list was never called"
+    assert svc.calls[0].get("includeSpamTrash") is True
+
+
+# --- End-to-end run (faked Gmail, message-level) ---------------------------
 
 
 def _b64(text: str) -> dict:
@@ -556,58 +538,56 @@ def _b64(text: str) -> dict:
 
 @pytest.fixture
 def fake_gmail(monkeypatch):
+    # One broad sender query returns ALL messages; each is classified by subject.
     messages = {
-        MSG_OVERLIMIT: {
-            "id": MSG_OVERLIMIT, "internalDate": "1720310400000", "_body": OVERLIMIT_BODY,
+        MSG_CARD: {
+            "id": MSG_CARD, "threadId": "tCARD", "internalDate": "1751846400000",
+            "subject": SUBJ_CARD, "html": CARD_HTML,
+        },
+        MSG_ACH: {
+            "id": MSG_ACH, "threadId": "tACH", "internalDate": "1751846400000",
+            "subject": SUBJ_ACH, "html": ACH_HTML,
+        },
+        MSG_TRANSFER: {
+            "id": MSG_TRANSFER, "threadId": "tXFER", "internalDate": "1751846400000",
+            "subject": SUBJ_TRANSFER, "html": TRANSFER_HTML,
         },
         MSG_USED_BATCH: {
-            "id": MSG_USED_BATCH, "internalDate": "1723507200000", "_body": USED_BATCH_BODY,
+            "id": MSG_USED_BATCH, "threadId": "tUSED", "internalDate": "1723507200000",
+            "subject": SUBJ_USED, "html": USED_BATCH_HTML,
         },
-        MSG_ACH: {"id": MSG_ACH, "internalDate": "1749772800000", "_body": ACH_BODY},
-        MSG_CURRENT: {
-            "id": MSG_CURRENT, "internalDate": "1751846400000", "_body": CURRENT_BODY,
-        },
-    }
-    # Keyed by the SUBJECT_ROUTES substrings (what build_query embeds), not the
-    # full rendered subjects. The two best-effort routes return nothing.
-    routing = {
-        "Debit/ATM Card Transaction Over Your Chosen Alert Limit": MSG_OVERLIMIT,
-        "Debit Card Used Online, by Phone or by Mail": MSG_USED_BATCH,
-        "A withdrawal was made over the limit you set": MSG_ACH,
-        "A transaction occurred over the limit you set": MSG_CURRENT,
     }
 
     def fake_search(service, query, max_results=2000):
-        for subject, msg_id in routing.items():
-            if f'subject:"{subject}"' in query:
-                return iter([{"id": msg_id}])
-        return iter([])
+        return iter([{"id": m["id"], "threadId": m["threadId"]} for m in messages.values()])
 
     def fake_get_message(service, message_id, fmt="full"):
         return messages[message_id]
 
-    def fake_get_body_text(message):
-        return message["_body"]
+    def fake_get_headers(message):
+        return {"subject": message["subject"]}
 
-    from confirmed_ctl.gmail import client as gmail_client
+    def fake_get_html_body(message):
+        return message["html"]
 
     monkeypatch.setattr(gmail_client, "search_messages", fake_search)
     monkeypatch.setattr(gmail_client, "get_message", fake_get_message)
-    monkeypatch.setattr(gmail_client, "get_body_text", fake_get_body_text)
+    monkeypatch.setattr(gmail_client, "get_headers", fake_get_headers)
+    monkeypatch.setattr(gmail_client, "get_html_body", fake_get_html_body)
     return object()  # a placeholder "service"
 
 
 def test_scan_messages_collects_all_schemas(fake_gmail):
     txns = scan_messages(fake_gmail, lookback_days=7)
-    # 1 over-limit + 5 batched used + 1 ACH + 1 current = 8
+    # 1 card + 1 ACH + 1 transfer + 5 batched used = 8
     assert len(txns) == 8
     by_schema = {}
     for t in txns:
         by_schema[t.schema] = by_schema.get(t.schema, 0) + 1
-    assert by_schema[SCHEMA_DEBITCARD_OVERLIMIT] == 1
-    assert by_schema[SCHEMA_DEBITCARD_USED] == 5
+    assert by_schema[SCHEMA_CARD] == 1
     assert by_schema[SCHEMA_ACH_WITHDRAWAL] == 1
-    assert by_schema[SCHEMA_CURRENT_VARIANT] == 1
+    assert by_schema[SCHEMA_TRANSFER] == 1
+    assert by_schema[SCHEMA_DEBITCARD_USED] == 5
 
 
 def test_run_email_scan_is_idempotent(fake_gmail):
