@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "confirmed-ctl"
+version = "0.2.0"
+description = "QBO bank-transaction sync and newspaper-ad payment confirmation tool (auto-ctl.io suite)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "PERM-Ads.com LLC" }]
+dependencies = [
+    "click>=8.1",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "SQLAlchemy>=2.0",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+# Live integrations. Kept optional so the core package + tests import without
+# heavy third-party stacks. Install with: pip install -e ".[live]"
+live = [
+    "psycopg2-binary>=2.9",
+    "google-auth>=2.28",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.120",
+    "flask>=3.0",
+    "chromadb>=0.5",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+confirmed-ctl = "confirmed_ctl.cli:cli"
+
+[tool.setuptools.packages.find]
+include = ["confirmed_ctl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+# Verbatim-from-spec modules use aligned kwargs and a few intentional patterns.
+[tool.ruff.lint.per-file-ignores]
+"confirmed_ctl/qbo/sync.py" = ["E501"]

@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local config & secrets (never commit real credentials or tokens)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+qbo_tokens.json
+gmail_token.json
+confirmed_ctl/qbo/tokens.json
+
+# ChromaDB local store
+chroma_db/
+
+# Runtime artifacts
+*.log
+downloads/
+tmp/
+receipts_tmp/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

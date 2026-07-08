@@ -1,0 +1,27 @@
+# confirmed-ctl runtime dependencies (auto-ctl.io suite)
+# See docs/ARCHITECTURE-SPEC.md Section 13.
+
+# QBO / HTTP
+requests>=2.31
+
+# Google / Gmail
+google-auth>=2.28
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.120
+
+# Database
+SQLAlchemy>=2.0
+alembic>=1.13
+psycopg2-binary>=2.9
+
+# Flask (mounted into the existing app)
+flask>=3.0
+
+# RAG / ChromaDB
+chromadb>=0.5
+
+# CLI
+click>=8.1
+
+# Utils
+python-dotenv>=1.0
