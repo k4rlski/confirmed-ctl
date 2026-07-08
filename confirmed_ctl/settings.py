@@ -31,7 +31,11 @@ GMAIL_TOKEN_PATH = _get(
     "GMAIL_TOKEN_PATH", "/opt/confirmed-ctl/secrets/google-service-account.json"
 )
 # The mailbox the service account impersonates (domain-wide delegation subject).
-GMAIL_IMPERSONATE = _get("GMAIL_IMPERSONATE", "info@perm-ads.com")
+# Default karl@perm-ads.com: it holds the BofA alerts in its DURABLE INBOX (not
+# Trash) and also receives Paul's info@ vendor ad-confirmation traffic that this
+# tool searches by CRM ad number. Override via env for info@perm-ads.com (the
+# delivery address, which auto-trashes alerts) or the admin mailbox.
+GMAIL_IMPERSONATE = _get("GMAIL_IMPERSONATE", "karl@perm-ads.com")
 
 # Email-scan ingestion
 # Default lookback window (days) for the BofA transaction-alert email scan.

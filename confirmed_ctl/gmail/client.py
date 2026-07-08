@@ -5,8 +5,8 @@ Read-only Gmail access for confirmed-ctl.
 Authentication uses a Google **service account** with domain-wide delegation
 (modelled on the ``gmail-ctl`` tool): the service-account JSON key at
 ``settings.GMAIL_TOKEN_PATH`` is loaded and ``.with_subject()`` impersonates
-``settings.GMAIL_IMPERSONATE`` (``info@perm-ads.com``). The only scope requested
-is ``gmail.readonly`` — this client NEVER calls modify/trash/delete.
+``settings.GMAIL_IMPERSONATE`` (default ``karl@perm-ads.com``). The only scope
+requested is ``gmail.readonly`` — this client NEVER calls modify/trash/delete.
 
 The Google client libraries are imported lazily so the rest of the package
 imports without them installed (tests never touch live Gmail).
@@ -48,11 +48,11 @@ def search_messages(
 
     Paginates automatically through ``users().messages().list``. Read-only.
 
-    ``includeSpamTrash=True`` is REQUIRED: BofA transaction alerts to
-    ``info@perm-ads.com`` are auto-filtered into **Trash**, which
-    ``users().messages().list`` excludes by default — so without this flag the
-    scan silently returns nothing. Read-only access to Trash does not modify or
-    restore anything.
+    ``includeSpamTrash=True`` is set **defensively**: the default mailbox
+    ``karl@perm-ads.com`` keeps BofA alerts in its INBOX, but at ``info@perm-ads.com``
+    (an override) a filter auto-trashes them, and ``users().messages().list``
+    excludes Trash/Spam by default — so without this flag that mailbox silently
+    returns nothing. Read-only access to Trash does not modify or restore anything.
     """
     page_token = None
     fetched = 0

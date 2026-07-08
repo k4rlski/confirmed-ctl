@@ -55,16 +55,21 @@ Receipt download/archiving is also handled by the separate **receipt-ctl** tool
 (see [`docs/RECEIPT-CTL.md`](docs/RECEIPT-CTL.md)); a lightweight in-suite
 downloader is available via `confirmed-ctl receipts`.
 
-### BofA email-scan: where the alerts live (run daily)
+### BofA email-scan: which mailbox, and where the alerts live
 
-BofA transaction alerts are sent to `info@perm-ads.com`, but a Gmail filter
-auto-sends them to **Trash**. The Gmail client therefore lists with
-`includeSpamTrash=True` (`gmail/client.py::search_messages`) — without it the
-scan silently finds nothing. Because **Gmail purges Trash after ~30 days**, the
-email-scan must run **daily** to stay complete. A durable INBOX copy of every
-alert is also forwarded to `karl@perm-ads.com`; if the mailbox is ever
-repointed, set `GMAIL_IMPERSONATE=karl@perm-ads.com` (the impersonated mailbox
-is configurable via `GMAIL_IMPERSONATE`, defaulting to `info@perm-ads.com`).
+The scan impersonates **`karl@perm-ads.com`** by default (`GMAIL_IMPERSONATE`).
+`karl@` is the primary mailbox because it holds every BofA transaction alert in
+its **durable INBOX** (not Trash), and it also receives Paul's `info@` vendor
+**ad-confirmation emails** — which confirmed-ctl searches by the CRM ad-number
+field `adnumbernews`. `info@perm-ads.com` is the delivery address: a Gmail filter
+there auto-sends BofA alerts to **Trash**, which Gmail purges after ~30 days, so
+using `info@` would require a **daily** scan to stay complete.
+
+The mailbox is configurable via `GMAIL_IMPERSONATE` (default
+`karl@perm-ads.com`; set `info@perm-ads.com` or the non-forwarded admin mailbox
+as alternatives). Regardless of mailbox, the Gmail client lists with
+`includeSpamTrash=True` **defensively** (`gmail/client.py::search_messages`) so
+any trashed alert is still found. Gmail settings/filters are never modified.
 
 The scan uses a broad, date-bounded **sender** query
 (`from:onlinebanking@ealerts.bankofamerica.com after:<epoch>`) — not brittle

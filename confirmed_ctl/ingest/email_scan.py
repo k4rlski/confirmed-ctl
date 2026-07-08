@@ -1,20 +1,24 @@
 """BofA transaction-alert email-scan ingestion adapter.
 
 This adapter reads (read-only) the impersonated mailbox (``GMAIL_IMPERSONATE``,
-default ``info@perm-ads.com``) via the service-account Gmail client and parses
+default ``karl@perm-ads.com``) via the service-account Gmail client and parses
 Bank of America transaction alerts (all sent from
 ``onlinebanking@ealerts.bankofamerica.com``) into ``bank_transactions`` rows
 (``source='email-scan'``).
 
-WHERE THE ALERTS LIVE (operational caveat)
-------------------------------------------
-A Gmail filter on ``info@perm-ads.com`` auto-sends BofA alerts to **Trash**, so
-the Gmail client MUST list with ``includeSpamTrash=True`` (see
-``gmail.client.search_messages``) or the scan finds nothing. Gmail purges Trash
-after ~30 days, so the scan must run **daily** for completeness. A durable INBOX
-copy of every alert is also forwarded to ``karl@perm-ads.com``; if the mailbox
-is ever repointed there, set ``GMAIL_IMPERSONATE=karl@perm-ads.com`` (it is
-configurable; the default stays ``info@perm-ads.com`` per the user directive).
+WHICH MAILBOX / WHERE THE ALERTS LIVE (operational caveat)
+----------------------------------------------------------
+The default mailbox is ``karl@perm-ads.com``: it holds every BofA alert in its
+**durable INBOX** (not Trash) and also receives Paul's ``info@`` vendor
+ad-confirmation emails that this tool searches by the CRM ad number
+(``adnumbernews``). ``info@perm-ads.com`` is only the delivery address — a Gmail
+filter there auto-sends BofA alerts to **Trash**, which Gmail purges after ~30
+days (so scanning ``info@`` would require a **daily** run for completeness). The
+mailbox is configurable via ``GMAIL_IMPERSONATE`` (``info@perm-ads.com`` / an
+admin mailbox are alternatives). Regardless of mailbox, the Gmail client lists
+with ``includeSpamTrash=True`` **defensively** (see
+``gmail.client.search_messages``) so any trashed alert is still found. Gmail
+settings/filters are never modified.
 
 REAL FORMATS (bs4 table-cell pairing)
 -------------------------------------
