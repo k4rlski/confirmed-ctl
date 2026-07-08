@@ -12,30 +12,29 @@ import click
 from . import __version__
 from .db.session import get_db
 from .gmail.receipts import process_pending_receipts
-from .qbo.sync import sync_recent_transactions
 
 
 @click.group()
 @click.version_option(__version__, prog_name="confirmed-ctl")
 def cli():
-    """confirmed-ctl — QBO bank sync and ad confirmation tool."""
+    """confirmed-ctl — bank-transaction ingest and ad confirmation tool."""
     pass
 
 
 @cli.command()
-@click.option("--lookback-days", default=2, help="Days to look back in QBO")
-@click.option("--no-cdc", is_flag=True, help="Use date query instead of CDC")
-def sync(lookback_days, no_cdc):
-    """Sync recent QBO transactions to local database."""
-    click.echo(f"Syncing last {lookback_days} days from QuickBooks...")
-    with get_db() as db:
-        summary = sync_recent_transactions(db, lookback_days=lookback_days, use_cdc=not no_cdc)
-    click.echo(f"Done: {summary['new']} new, {summary['updated']} updated, "
-               f"{summary['fetched']} total fetched.")
-    if summary["errors"]:
-        click.echo("Errors:")
-        for e in summary["errors"]:
-            click.echo(f"  {e}")
+@click.option("--lookback-days", default=2, help="Days to look back when ingesting")
+def sync(lookback_days):
+    """Ingest recent bank transactions into the local database.
+
+    TODO(phase-later): wire to the BofA email-scan / export ingestion adapters.
+    The QuickBooks (QBO) sync backend was removed in Phase 1; the replacement
+    adapters arrive in a later generation. This command is currently a stub.
+    """
+    click.echo(
+        "Ingestion not yet implemented: the QBO sync backend was removed in "
+        "Phase 1 and the BofA email-scan / export adapters are not wired yet "
+        f"(requested lookback: {lookback_days} days)."
+    )
 
 
 @cli.command()

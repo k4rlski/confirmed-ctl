@@ -14,7 +14,6 @@ from ..db.session import get_db
 from ..gmail.client import search_threads_by_ad_number
 from ..matching.rag import store_confirmed_match
 from ..matching.scorer import get_candidate_transactions
-from ..qbo.sync import sync_recent_transactions
 
 confirmed_ctl_bp = Blueprint("confirmed_ctl", __name__, url_prefix="/confirmed-ctl")
 
@@ -23,15 +22,25 @@ confirmed_ctl_bp = Blueprint("confirmed_ctl", __name__, url_prefix="/confirmed-c
 def trigger_sync():
     """
     Called by the [Sync Now] button in the Flask UI.
-    Mirrors your Stripe sync button pattern.
+
+    TODO(phase-later): wire this to the BofA email-scan / export ingestion
+    adapters. The QuickBooks (QBO) sync backend was removed in Phase 1 when we
+    pivoted away from the QBO API; the replacement ingestion adapters land in a
+    later generation. Until then this endpoint is a no-op stub that reports it
+    is not yet implemented (the request shape is preserved so the UI wiring can
+    stay unchanged).
     """
     body = request.get_json(silent=True) or {}
     lookback = int(body.get("lookback_days", 2))
 
-    with get_db() as db:
-        summary = sync_recent_transactions(db, lookback_days=lookback)
-
-    return jsonify({"status": "ok", "summary": summary})
+    return jsonify({
+        "status": "not_implemented",
+        "detail": (
+            "Ingestion adapters (BofA email-scan / export) are not wired yet; "
+            "the QBO sync backend was removed in Phase 1."
+        ),
+        "lookback_days": lookback,
+    }), 501
 
 
 @confirmed_ctl_bp.route("/sync/status", methods=["GET"])
@@ -84,7 +93,8 @@ def get_candidates(ad_id: int):
             "bank_candidates": [
                 {
                     "txn_id": c["transaction"].id,
-                    "qbo_id": c["transaction"].qbo_id,
+                    "source": c["transaction"].source,
+                    "source_txn_id": c["transaction"].source_txn_id,
                     "txn_date": str(c["transaction"].txn_date),
                     "amount": float(c["transaction"].total_amount),
                     "vendor_name": c["transaction"].vendor_name,
@@ -165,7 +175,7 @@ def confirm_ad():
             "status": "confirmed",
             "confirmation_id": conf.id,
             "ad_number": ad.ad_number,
-            "txn_qbo_id": txn.qbo_id if txn else None,
+            "txn_source_txn_id": txn.source_txn_id if txn else None,
             "gmail_thread_id": thread_id,
         })
 

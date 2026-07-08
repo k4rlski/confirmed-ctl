@@ -1,7 +1,7 @@
 # confirmed-ctl runtime dependencies (auto-ctl.io suite)
 # See docs/ARCHITECTURE-SPEC.md Section 13.
 
-# QBO / HTTP
+# HTTP (used by google-auth transport)
 requests>=2.31
 
 # Google / Gmail

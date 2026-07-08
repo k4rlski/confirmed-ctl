@@ -15,8 +15,6 @@ def test_core_modules_import():
         "confirmed_ctl.daemon",
         "confirmed_ctl.db.models",
         "confirmed_ctl.db.session",
-        "confirmed_ctl.qbo.client",
-        "confirmed_ctl.qbo.sync",
         "confirmed_ctl.gmail.client",
         "confirmed_ctl.gmail.receipts",
         "confirmed_ctl.matching.scorer",

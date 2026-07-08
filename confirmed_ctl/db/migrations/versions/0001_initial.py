@@ -23,8 +23,8 @@ def upgrade() -> None:
     op.create_table(
         "bank_transactions",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("qbo_id", sa.String(length=50), nullable=False),
-        sa.Column("sync_token", sa.String(length=20)),
+        sa.Column("source", sa.String(length=50)),
+        sa.Column("source_txn_id", sa.String(length=100)),
         sa.Column("txn_date", sa.Date(), nullable=False),
         sa.Column("created_time", sa.DateTime(timezone=True)),
         sa.Column("updated_time", sa.DateTime(timezone=True)),
@@ -46,7 +46,9 @@ def upgrade() -> None:
         ),
         sa.Column("confirmed_at", sa.DateTime(timezone=True)),
         sa.Column("created_in_db", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("qbo_id", name="uq_bank_transactions_qbo_id"),
+        sa.UniqueConstraint(
+            "source", "source_txn_id", name="uq_bank_transactions_source_txn"
+        ),
     )
     op.create_index("idx_bank_txn_date", "bank_transactions", [sa.text("txn_date DESC")])
     op.create_index("idx_bank_txn_vendor", "bank_transactions", ["vendor_name"])

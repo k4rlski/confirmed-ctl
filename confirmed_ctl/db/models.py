@@ -21,6 +21,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -50,13 +51,24 @@ class AdPurchase(Base):
 
 
 class BankTransaction(Base):
-    """A QBO Purchase/BillPayment synced into the local database."""
+    """A bank transaction ingested from a source (BofA email-scan / export).
+
+    ``source`` names the ingestion adapter that produced the row and
+    ``source_txn_id`` is that source's own identifier for the transaction.
+    The pair is unique *per source* (see ``__table_args__``); both are nullable
+    because some ingestion paths may not carry a stable per-txn id.
+    """
 
     __tablename__ = "bank_transactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "source_txn_id", name="uq_bank_transactions_source_txn"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    qbo_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
-    sync_token: Mapped[str | None] = mapped_column(String(20))
+    source: Mapped[str | None] = mapped_column(String(50))
+    source_txn_id: Mapped[str | None] = mapped_column(String(100))
     txn_date: Mapped[date] = mapped_column(Date, nullable=False)
     created_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -108,7 +120,7 @@ class AdConfirmation(Base):
 
 
 class SyncLog(Base):
-    """Audit trail for each confirmed-ctl QBO sync run."""
+    """Audit trail for each confirmed-ctl ingestion/sync run."""
 
     __tablename__ = "confirmed_ctl_sync_log"
 

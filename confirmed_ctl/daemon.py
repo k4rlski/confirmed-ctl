@@ -1,7 +1,11 @@
 """confirmed_ctl/daemon.py
 
-Daemon loop for confirmed-ctl. Wakes on an interval, runs a QBO sync, sleeps.
-Interval configured via SYNC_INTERVAL_SECONDS (default: 3600 = 1 hour).
+Daemon loop for confirmed-ctl. Wakes on an interval, runs an ingestion pass,
+sleeps. Interval configured via SYNC_INTERVAL_SECONDS (default: 3600 = 1 hour).
+
+TODO(phase-later): wire the loop to the BofA email-scan / export ingestion
+adapters. The QuickBooks (QBO) sync backend was removed in Phase 1; until the
+replacement adapters land in a later generation the loop only heartbeats.
 """
 
 from __future__ import annotations
@@ -10,24 +14,20 @@ import logging
 import time
 
 from . import settings
-from .db.session import get_db
-from .qbo.sync import sync_recent_transactions
 
 log = logging.getLogger("confirmed-ctl.daemon")
 
 
 def run():
-    log.info("confirmed-ctl daemon starting. Interval: %ss.", settings.SYNC_INTERVAL_SECONDS)
+    log.info(
+        "confirmed-ctl daemon starting. Interval: %ss. Ingestion adapters are "
+        "not wired yet (QBO sync removed in Phase 1); the loop is idle until "
+        "the BofA email-scan / export adapters land.",
+        settings.SYNC_INTERVAL_SECONDS,
+    )
     while True:
-        try:
-            with get_db() as db:
-                summary = sync_recent_transactions(db, lookback_days=2)
-            log.info(
-                "Sync complete: %s new, %s updated, %s fetched.",
-                summary["new"], summary["updated"], summary["fetched"],
-            )
-        except Exception as e:
-            log.error("Sync error: %s", e)
+        # TODO(phase-later): call the ingestion adapter(s) here.
+        log.debug("confirmed-ctl daemon heartbeat; no ingestion adapter wired.")
         time.sleep(settings.SYNC_INTERVAL_SECONDS)
 
 
