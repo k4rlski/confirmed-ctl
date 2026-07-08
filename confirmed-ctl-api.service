@@ -1,0 +1,24 @@
+# confirmed-ctl HTTP API (gunicorn serving confirmed_ctl.wsgi:app).
+#
+# Binds localhost only (127.0.0.1:8787) by design — the API is never exposed
+# publicly. It is reached from claw/MARS over an SSH tunnel. Authentication is
+# a bearer token (CONFIRMED_CTL_API_TOKEN in the EnvironmentFile); when that is
+# unset the app fails open (dev/test), so the production EnvironmentFile MUST
+# set it.
+[Unit]
+Description=confirmed-ctl HTTP API (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=auto-ops
+WorkingDirectory=/opt/confirmed-ctl
+EnvironmentFile=/opt/confirmed-ctl/.env
+ExecStart=/opt/confirmed-ctl/venv/bin/gunicorn -b 127.0.0.1:8787 -w 2 --timeout 60 confirmed_ctl.wsgi:app
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

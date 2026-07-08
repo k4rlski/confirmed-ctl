@@ -74,3 +74,16 @@ CHROMA_PATH = _get("CHROMA_PATH", "/opt/confirmed-ctl/chroma_db")
 
 # Daemon
 SYNC_INTERVAL_SECONDS = int(_get("SYNC_INTERVAL_SECONDS", "3600"))
+
+# HTTP API (confirmed_ctl.wsgi:app served by gunicorn on fang, reached from
+# claw/MARS over an SSH tunnel).
+# API_TOKEN gates every request via a bearer-token before_request guard in
+# wsgi.py. IMPORTANT fail-open-when-unset behavior: when this is empty
+# (dev/test/unconfigured) the guard allows all requests through; the fang
+# service MUST set CONFIRMED_CTL_API_TOKEN so production is authenticated.
+API_TOKEN = os.environ.get("CONFIRMED_CTL_API_TOKEN", "")
+
+# Address the API binds to. Localhost-only by design: the API is never exposed
+# publicly — claw/MARS reach it through an SSH tunnel. Used for documentation
+# and the systemd unit / bind string.
+API_BIND = os.environ.get("CONFIRMED_CTL_API_BIND", "127.0.0.1:8787")

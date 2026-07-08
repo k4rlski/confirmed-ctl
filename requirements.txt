@@ -23,6 +23,10 @@ PyMySQL>=1.1
 # Flask (mounted into the existing app)
 flask>=3.0
 
+# WSGI server for the confirmed_ctl.wsgi:app HTTP API (runs on fang, localhost-
+# bound, reached from claw/MARS over an SSH tunnel).
+gunicorn>=21.2
+
 # RAG / ChromaDB
 chromadb>=0.5
 
