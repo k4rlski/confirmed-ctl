@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local config & secrets (never commit real credentials)
+confirmed-ctl.yml
+*.local.yml
+.env
+.env.*
+*.pem
+*.key
+
+# Runtime artifacts
+*.log
+downloads/
+tmp/
+receipts_tmp/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
