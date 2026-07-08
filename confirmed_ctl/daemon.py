@@ -27,7 +27,10 @@ def run():
     )
     while True:
         # TODO(phase-later): call the ingestion adapter(s) here.
-        log.debug("confirmed-ctl daemon heartbeat; no ingestion adapter wired.")
+        log.info(
+            "confirmed-ctl daemon heartbeat: idle — no ingestion adapter wired, "
+            "no transactions ingested this cycle."
+        )
         time.sleep(settings.SYNC_INTERVAL_SECONDS)
 
 

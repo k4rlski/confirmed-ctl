@@ -7,6 +7,8 @@ Usage:
   confirmed-ctl receipts
   confirmed-ctl match --ad-id 1234
 """
+import sys
+
 import click
 
 from . import __version__
@@ -28,13 +30,17 @@ def sync(lookback_days):
 
     TODO(phase-later): wire to the BofA email-scan / export ingestion adapters.
     The QuickBooks (QBO) sync backend was removed in Phase 1; the replacement
-    adapters arrive in a later generation. This command is currently a stub.
+    adapters arrive in a later generation. This command is currently a stub and
+    exits NON-ZERO so cron/automation never treats it as a successful sync.
     """
     click.echo(
-        "Ingestion not yet implemented: the QBO sync backend was removed in "
-        "Phase 1 and the BofA email-scan / export adapters are not wired yet "
-        f"(requested lookback: {lookback_days} days)."
+        "ERROR: ingestion not implemented yet — no transactions ingested, no "
+        "SyncLog written. The QBO sync backend was removed in Phase 1 and the "
+        "BofA email-scan / export adapters land in a later gen "
+        f"(requested lookback: {lookback_days} days).",
+        err=True,
     )
+    sys.exit(1)
 
 
 @cli.command()
