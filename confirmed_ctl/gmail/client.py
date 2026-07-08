@@ -1,14 +1,22 @@
 """confirmed_ctl/gmail/client.py
 
-Search Gmail for threads containing a specific ad number string.
-Uses existing Gmail OAuth credentials from your other machine/project.
-Scope required: https://www.googleapis.com/auth/gmail.readonly
+Read-only Gmail access for confirmed-ctl.
+
+Authentication uses a Google **service account** with domain-wide delegation
+(modelled on the ``gmail-ctl`` tool): the service-account JSON key at
+``settings.GMAIL_TOKEN_PATH`` is loaded and ``.with_subject()`` impersonates
+``settings.GMAIL_IMPERSONATE`` (``info@perm-ads.com``). The only scope requested
+is ``gmail.readonly`` — this client NEVER calls modify/trash/delete.
 
 The Google client libraries are imported lazily so the rest of the package
-imports without them installed.
+imports without them installed (tests never touch live Gmail).
 """
 
 from __future__ import annotations
+
+import base64
+import time
+from collections.abc import Iterator
 
 from .. import settings
 
@@ -16,17 +24,95 @@ GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
 def get_gmail_service():
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
+    """Build a read-only Gmail API service via service-account delegation.
+
+    Loads the service-account key from ``settings.GMAIL_TOKEN_PATH`` and
+    impersonates ``settings.GMAIL_IMPERSONATE``. Secrets live on disk (the key
+    file), never in source.
+    """
+    from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
-    token_path = settings.GMAIL_TOKEN_PATH
-    creds = Credentials.from_authorized_user_file(token_path, GMAIL_SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
-    return build("gmail", "v1", credentials=creds)
+    creds = service_account.Credentials.from_service_account_file(
+        settings.GMAIL_TOKEN_PATH, scopes=GMAIL_SCOPES
+    )
+    delegated = creds.with_subject(settings.GMAIL_IMPERSONATE)
+    return build("gmail", "v1", credentials=delegated)
+
+
+def search_messages(
+    service, query: str, max_results: int = 2000
+) -> Iterator[dict]:
+    """Yield message stubs (``{id, threadId}``) matching ``query``.
+
+    Paginates automatically through ``users().messages().list``. Read-only.
+    """
+    page_token = None
+    fetched = 0
+    while fetched < max_results:
+        batch = min(500, max_results - fetched)
+        params = {"userId": "me", "q": query, "maxResults": batch}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = service.users().messages().list(**params).execute()
+        messages = resp.get("messages", [])
+        for m in messages:
+            yield m
+            fetched += 1
+        page_token = resp.get("nextPageToken")
+        if not page_token or not messages:
+            break
+        time.sleep(0.1)  # rate-limit courtesy
+
+
+def get_message(service, message_id: str, fmt: str = "full") -> dict:
+    """Fetch a full message (headers + body). Read-only."""
+    return (
+        service.users()
+        .messages()
+        .get(userId="me", id=message_id, format=fmt)
+        .execute()
+    )
+
+
+def get_headers(message: dict) -> dict:
+    """Return a lower-cased header-name -> value dict for a message."""
+    headers = {}
+    for h in message.get("payload", {}).get("headers", []):
+        headers[h["name"].lower()] = h["value"]
+    return headers
+
+
+def get_body_text(message: dict) -> str:
+    """Extract the best-effort text body from a (possibly multipart) message.
+
+    Prefers ``text/plain``; falls back to ``text/html`` (returned raw) so the
+    parser can still label-match. Recurses through multipart containers.
+    """
+    payload = message.get("payload", {})
+    text = _extract_part(payload, "text/plain")
+    if text:
+        return text
+    return _extract_part(payload, "text/html")
+
+
+def _decode_body(body: dict) -> str:
+    data = body.get("data", "")
+    if not data:
+        return ""
+    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+
+
+def _extract_part(payload: dict, want_mime: str) -> str:
+    mime = payload.get("mimeType", "")
+    if mime == want_mime:
+        return _decode_body(payload.get("body", {}))
+    if mime.startswith("multipart/"):
+        for part in payload.get("parts", []):
+            text = _extract_part(part, want_mime)
+            if text:
+                return text
+    return ""
 
 
 def search_threads_by_ad_number(ad_number: str, max_results: int = 5) -> list[dict]:

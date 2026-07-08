@@ -101,6 +101,7 @@ def upgrade() -> None:
     op.create_table(
         "confirmed_ctl_sync_log",
         sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("source", sa.String(length=50)),
         sa.Column("synced_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("lookback_days", sa.Integer()),
         sa.Column("txns_fetched", sa.Integer()),

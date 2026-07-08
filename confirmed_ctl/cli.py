@@ -26,21 +26,27 @@ def cli():
 @cli.command()
 @click.option("--lookback-days", default=2, help="Days to look back when ingesting")
 def sync(lookback_days):
-    """Ingest recent bank transactions into the local database.
+    """Ingest recent BofA transaction-alert emails into ``bank_transactions``.
 
-    TODO(phase-later): wire to the BofA email-scan / export ingestion adapters.
-    The QuickBooks (QBO) sync backend was removed in Phase 1; the replacement
-    adapters arrive in a later generation. This command is currently a stub and
-    exits NON-ZERO so cron/automation never treats it as a successful sync.
+    Runs the read-only Gmail email-scan adapter (both alert missions), inserts
+    new transactions idempotently, and records a SyncLog entry. Exits 0 on
+    success (printing counts) and non-zero on error.
     """
+    from .ingest.email_scan import run_email_scan
+
+    try:
+        with get_db() as db:
+            result = run_email_scan(db, lookback_days=lookback_days)
+    except Exception as exc:
+        click.echo(f"ERROR: email-scan sync failed: {exc}", err=True)
+        sys.exit(1)
+
     click.echo(
-        "ERROR: ingestion not implemented yet — no transactions ingested, no "
-        "SyncLog written. The QBO sync backend was removed in Phase 1 and the "
-        "BofA email-scan / export adapters land in a later gen "
-        f"(requested lookback: {lookback_days} days).",
-        err=True,
+        "email-scan sync complete "
+        f"(lookback {result['lookback_days']}d): "
+        f"found={result['found']} inserted={result['inserted']} "
+        f"skipped={result['skipped']}"
     )
-    sys.exit(1)
 
 
 @cli.command()

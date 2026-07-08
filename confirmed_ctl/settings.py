@@ -24,7 +24,16 @@ def _get(name: str, default: str = "") -> str:
 DATABASE_URL = _get("DATABASE_URL")
 
 # Gmail
+# GMAIL_TOKEN_PATH points at the Google **service-account** JSON key file used for
+# read-only, domain-wide-delegated access (impersonating GMAIL_IMPERSONATE). The
+# path is a secret location on disk — never hardcode the key contents here.
 GMAIL_TOKEN_PATH = _get("GMAIL_TOKEN_PATH", "/opt/confirmed-ctl/gmail_token.json")
+# The mailbox the service account impersonates (domain-wide delegation subject).
+GMAIL_IMPERSONATE = _get("GMAIL_IMPERSONATE", "info@perm-ads.com")
+
+# Email-scan ingestion
+# Default lookback window (days) for the BofA transaction-alert email scan.
+EMAIL_SCAN_LOOKBACK_DAYS = int(_get("EMAIL_SCAN_LOOKBACK_DAYS", "2"))
 
 # Receipts + RAG storage
 RECEIPTS_BASE_PATH = _get("RECEIPTS_BASE_PATH", "/mnt/receipts")
