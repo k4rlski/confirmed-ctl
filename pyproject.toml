@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "confirmed-ctl"
 version = "0.2.0"
-description = "QBO bank-transaction sync and newspaper-ad payment confirmation tool (auto-ctl.io suite)."
+description = "Bank-transaction ingest and newspaper-ad payment confirmation tool (auto-ctl.io suite)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
@@ -50,6 +50,3 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
-# Verbatim-from-spec modules use aligned kwargs and a few intentional patterns.
-[tool.ruff.lint.per-file-ignores]
-"confirmed_ctl/qbo/sync.py" = ["E501"]

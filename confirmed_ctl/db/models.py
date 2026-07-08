@@ -14,14 +14,18 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -29,6 +33,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # Tables that live in the shared CRM database but are NOT owned/migrated by
 # confirmed-ctl. Alembic's autogenerate is configured to ignore these.
 EXTERNAL_TABLES = frozenset({"ad_purchases"})
+
+# Allowed values for ``bank_transactions.source`` — one per ingestion adapter.
+# Adapters MUST use exactly these strings (enforced by a DB CHECK constraint).
+BANK_TXN_SOURCES = ("email-scan", "export-ofx", "export-csv")
 
 
 class Base(DeclarativeBase):
@@ -50,13 +58,48 @@ class AdPurchase(Base):
 
 
 class BankTransaction(Base):
-    """A QBO Purchase/BillPayment synced into the local database."""
+    """A bank transaction ingested from a source (BofA email-scan / export).
+
+    ``source`` names the ingestion adapter that produced the row and
+    ``source_txn_id`` is that source's own stable identifier for the
+    transaction. Both are ``NOT NULL`` and the pair is UNIQUE, so re-ingesting
+    the same transaction is idempotent (the composite unique constraint
+    ``uq_bank_transactions_source_txn`` collapses duplicates).
+
+    ``source`` is restricted by a CHECK constraint to the ingestion adapters:
+    ``email-scan`` / ``export-ofx`` / ``export-csv`` (see ``BANK_TXN_SOURCES``).
+
+    ``source_txn_id`` is ALWAYS populated (never ``NULL``). The convention,
+    implemented by ``confirmed_ctl.ingest.dedup.deterministic_source_txn_id``:
+
+    - **OFX** (``export-ofx``) → the statement ``<FITID>``.
+    - **email/CSV** (``email-scan`` / ``export-csv``) → a hex SHA-256 hash of the
+      normalized natural key ``(source, posted_date, amount, description, last4)``.
+    """
 
     __tablename__ = "bank_transactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "source_txn_id", name="uq_bank_transactions_source_txn"
+        ),
+        CheckConstraint(
+            "source IN ('email-scan', 'export-ofx', 'export-csv')",
+            name="ck_bank_transactions_source",
+        ),
+        # Partial index for the unmatched-queue query: the popup/CLI candidate
+        # lookup (matching/scorer.py, api /candidates) filters on unmatched rows
+        # (confirmed_ad_id IS NULL) within a txn_date window. Indexing only the
+        # unmatched rows keeps it small and fast as matched history grows.
+        Index(
+            "idx_bank_txn_unmatched_date",
+            "txn_date",
+            postgresql_where=text("confirmed_ad_id IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    qbo_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
-    sync_token: Mapped[str | None] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_txn_id: Mapped[str] = mapped_column(String(100), nullable=False)
     txn_date: Mapped[date] = mapped_column(Date, nullable=False)
     created_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -108,7 +151,7 @@ class AdConfirmation(Base):
 
 
 class SyncLog(Base):
-    """Audit trail for each confirmed-ctl QBO sync run."""
+    """Audit trail for each confirmed-ctl ingestion/sync run."""
 
     __tablename__ = "confirmed_ctl_sync_log"
 

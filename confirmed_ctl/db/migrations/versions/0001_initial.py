@@ -23,8 +23,8 @@ def upgrade() -> None:
     op.create_table(
         "bank_transactions",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("qbo_id", sa.String(length=50), nullable=False),
-        sa.Column("sync_token", sa.String(length=20)),
+        sa.Column("source", sa.String(length=50), nullable=False),
+        sa.Column("source_txn_id", sa.String(length=100), nullable=False),
         sa.Column("txn_date", sa.Date(), nullable=False),
         sa.Column("created_time", sa.DateTime(timezone=True)),
         sa.Column("updated_time", sa.DateTime(timezone=True)),
@@ -46,12 +46,26 @@ def upgrade() -> None:
         ),
         sa.Column("confirmed_at", sa.DateTime(timezone=True)),
         sa.Column("created_in_db", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.UniqueConstraint("qbo_id", name="uq_bank_transactions_qbo_id"),
+        sa.UniqueConstraint(
+            "source", "source_txn_id", name="uq_bank_transactions_source_txn"
+        ),
+        sa.CheckConstraint(
+            "source IN ('email-scan', 'export-ofx', 'export-csv')",
+            name="ck_bank_transactions_source",
+        ),
     )
     op.create_index("idx_bank_txn_date", "bank_transactions", [sa.text("txn_date DESC")])
     op.create_index("idx_bank_txn_vendor", "bank_transactions", ["vendor_name"])
     op.create_index("idx_bank_txn_amount", "bank_transactions", ["total_amount"])
     op.create_index("idx_bank_txn_confirmed", "bank_transactions", ["confirmed_ad_id"])
+    # Partial index for the unmatched-queue candidate query (confirmed_ad_id IS
+    # NULL, filtered/sorted by txn_date). See matching/scorer.py.
+    op.create_index(
+        "idx_bank_txn_unmatched_date",
+        "bank_transactions",
+        ["txn_date"],
+        postgresql_where=sa.text("confirmed_ad_id IS NULL"),
+    )
 
     op.create_table(
         "ad_confirmations",
@@ -90,6 +104,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("confirmed_ctl_sync_log")
     op.drop_table("ad_confirmations")
+    op.drop_index("idx_bank_txn_unmatched_date", table_name="bank_transactions")
     op.drop_index("idx_bank_txn_confirmed", table_name="bank_transactions")
     op.drop_index("idx_bank_txn_amount", table_name="bank_transactions")
     op.drop_index("idx_bank_txn_vendor", table_name="bank_transactions")
