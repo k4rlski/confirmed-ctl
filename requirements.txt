@@ -17,6 +17,9 @@ SQLAlchemy>=2.0
 alembic>=1.13
 psycopg2-binary>=2.9
 
+# CRM (read-only MariaDB adapter into permtrak2_crm)
+PyMySQL>=1.1
+
 # Flask (mounted into the existing app)
 flask>=3.0
 
