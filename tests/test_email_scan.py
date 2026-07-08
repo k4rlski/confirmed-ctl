@@ -165,13 +165,24 @@ def test_subject_routing_table():
     assert schema_for_subject(SUBJ_USED) == SCHEMA_DEBITCARD_USED
     assert schema_for_subject(SUBJ_ACH) == SCHEMA_ACH_WITHDRAWAL
     assert schema_for_subject(SUBJ_CURRENT) == SCHEMA_CURRENT_VARIANT
-    # Best-effort routes fall through to the debit-card over-limit parser.
-    assert schema_for_subject(SUBJ_ELEC) == SCHEMA_DEBITCARD_OVERLIMIT
-    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_DEBITCARD_OVERLIMIT
+    # Best-effort ACH-shaped routes go to the ACH withdrawal parser (S2).
+    assert schema_for_subject(SUBJ_ELEC) == SCHEMA_ACH_WITHDRAWAL
+    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_ACH_WITHDRAWAL
     # Case-insensitive.
     assert schema_for_subject(SUBJ_ACH.upper()) == SCHEMA_ACH_WITHDRAWAL
     # Unknown subject → no route.
     assert schema_for_subject("Your statement is ready") is None
+
+
+def test_s2_ach_shaped_subjects_route_to_ach():
+    """S2: the two ACH-shaped best-effort subjects go to the ACH schema."""
+    assert schema_for_subject(SUBJ_ELEC) == SCHEMA_ACH_WITHDRAWAL
+    assert schema_for_subject(SUBJ_TRANSFER) == SCHEMA_ACH_WITHDRAWAL
+    # An ACH-shaped body under one of these subjects parses via the ACH schema.
+    txns = parse_message(ACH_BODY, SUBJ_ELEC, MSG_ACH, fallback_date=date(2025, 6, 13))
+    assert len(txns) == 1
+    assert txns[0].schema == SCHEMA_ACH_WITHDRAWAL
+    assert txns[0].amount == Decimal("-1487.50")
 
 
 # --- Amount cleaner (dual formats + footnote digit) ------------------------
@@ -220,6 +231,95 @@ def test_overlimit_missing_mandatory_fields_returns_none():
         fallback_date=None,
     )
     assert txn is None
+
+
+# --- S1: fail-closed parsing (no whole-body fallback, no fabricated date) ---
+
+# Missing the "Amount:" label but the alert LIMIT figure IS present in the body.
+# The old whole-body fallback would grab $500.00 (the limit); fail-closed must
+# not, so the record is skipped rather than stored with a wrong amount.
+OVERLIMIT_NO_AMOUNT_LABEL_BODY = """Bank of America
+
+Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit
+
+Your chosen alert limit is $ 500.00
+Debit/ATM card: ending in - 5723
+Where: at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA
+When: on July 07, 2024
+
+View details in Online Banking.
+"""
+
+# Amount present, but the date label ("When:") is missing while a stray date
+# sits in a footer line. Fail-closed must not scan the body for that stray date.
+OVERLIMIT_NO_DATE_LABEL_BODY = """Bank of America
+
+Account Alert: Debit/ATM Card Transaction Over Your Chosen Alert Limit
+
+Amount: $ 856.00
+Debit/ATM card: ending in - 5723
+Where: at THE PHILADELPHIA INQUI-PHILADELPHIA ,PA
+
+Message generated January 01, 2000.
+"""
+
+
+def test_fail_closed_missing_amount_label_skips_record():
+    # No "Amount:" label -> must NOT fall back to the body's LIMIT figure.
+    txn = parse_single(
+        OVERLIMIT_NO_AMOUNT_LABEL_BODY,
+        SCHEMA_DEBITCARD_OVERLIMIT,
+        MSG_OVERLIMIT,
+        fallback_date=date(2024, 7, 7),
+    )
+    assert txn is None  # skipped, not a wrong -$500.00 (the alert LIMIT)
+
+
+def test_fail_closed_missing_date_label_no_stray_body_date():
+    # Labeled date missing + no fallback => None (NOT the stray body date), so
+    # the mandatory-date rule skips the record.
+    txn = parse_single(
+        OVERLIMIT_NO_DATE_LABEL_BODY,
+        SCHEMA_DEBITCARD_OVERLIMIT,
+        MSG_OVERLIMIT,
+        fallback_date=None,
+    )
+    assert txn is None
+
+
+def test_fail_closed_missing_date_label_uses_fallback_not_stray():
+    # With a Gmail fallback date, the labeled lookup yields no value so the
+    # field takes the FALLBACK — never the stray "January 01, 2000" in the body.
+    txn = parse_single(
+        OVERLIMIT_NO_DATE_LABEL_BODY,
+        SCHEMA_DEBITCARD_OVERLIMIT,
+        MSG_OVERLIMIT,
+        fallback_date=date(2024, 7, 7),
+    )
+    assert txn is not None
+    assert txn.posted_date == date(2024, 7, 7)
+    assert txn.posted_date != date(2000, 1, 1)
+
+
+# Batched block with an amount but NO "On:" date label and no fallback: the
+# block must be skipped, never fabricated with date.today() (N2 removed).
+USED_BLOCK_NO_DATE_BODY = """Bank of America
+
+Account Alert: Debit Card Used Online, by Phone or by Mail
+
+Account: Debit card ending in 7625
+Amount: $ 15.00
+Made at: BUFFER PUBLISH PRO MO -+14152955970 ,CA
+
+View details in Online Banking.
+"""
+
+
+def test_fail_closed_batched_missing_date_skips_block_no_today():
+    txns = parse_debitcard_used(
+        USED_BLOCK_NO_DATE_BODY, MSG_USED_SINGLE, fallback_date=None
+    )
+    assert txns == []  # no fabricated date.today(); the block is skipped
 
 
 # --- SCHEMA-DEBITCARD-USED (single + batched) ------------------------------

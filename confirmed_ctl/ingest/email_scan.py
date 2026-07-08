@@ -36,9 +36,10 @@ parser per alert. The known real subjects / schemas:
   fixture), so its field regexes remain heuristic (# REFINE). Labels: ``Amount``,
   ``Debit/ATM card``, ``Merchant``, ``Transaction type``, ``Date``.
 
-Two additional subjects are routed best-effort to the debit-card over-limit
-parser (# REFINE): "Activity Alert: Electronic or Online Withdrawal Over Your
-Chosen Alert Limit" and "Online transfer occurred over the limit you set".
+Two additional ACH-shaped subjects (no card-ending field) are routed best-effort
+to the ACH withdrawal parser (# REFINE): "Activity Alert: Electronic or Online
+Withdrawal Over Your Chosen Alert Limit" and "Online transfer occurred over the
+limit you set".
 
 Idempotency / ``source_txn_id`` derivation (see ``ingest.dedup``):
 
@@ -89,16 +90,17 @@ SUBJECT_ROUTES: tuple[tuple[str, str], ...] = (
         "A withdrawal was made over the limit you set",
         SCHEMA_ACH_WITHDRAWAL,
     ),
-    # Best-effort: same debit-card over-limit layout. # REFINE
+    # Best-effort: ACH-shaped withdrawals (no card-ending field); route to the
+    # ACH schema until a raw sample confirms otherwise. # REFINE
     (
         "Electronic or Online Withdrawal Over Your Chosen Alert Limit",
-        SCHEMA_DEBITCARD_OVERLIMIT,
+        SCHEMA_ACH_WITHDRAWAL,
     ),
-    # Best-effort: the only still-recent subject; treat like the over-limit
-    # debit-card layout until a raw sample confirms otherwise. # REFINE
+    # Best-effort: ACH-shaped transfer over the limit; treat like the ACH
+    # withdrawal layout until a raw sample confirms otherwise. # REFINE
     (
         "Online transfer occurred over the limit you set",
-        SCHEMA_DEBITCARD_OVERLIMIT,
+        SCHEMA_ACH_WITHDRAWAL,
     ),
     # The user's CURRENT live alert — rendered fields only, no raw fixture. # REFINE
     (
@@ -352,13 +354,25 @@ def parse_single(
     """
     labels = _SINGLE_SCHEMAS[schema]
 
-    amount = parse_amount(_label_value(text, labels["amount"]) or text)
-    posted = parse_date(_label_value(text, labels["date"]) or text, fallback_date)
+    # Fail-closed: only parse the labeled value, never the whole body. Scanning
+    # the entire body risks grabbing the alert LIMIT figure instead of the
+    # transaction amount (or an unrelated date), so a missing label yields None.
+    amount_raw = _label_value(text, labels["amount"])
+    amount = parse_amount(amount_raw) if amount_raw is not None else None
+    date_raw = _label_value(text, labels["date"])
+    posted = parse_date(date_raw, fallback_date) if date_raw is not None else fallback_date
     merchant = _clean_merchant(_label_value(text, labels.get("merchant", ())))
     last4 = parse_last4(_label_value(text, labels.get("last4", ())) or "")
     txn_type = _clean_type(_label_value(text, labels.get("txn_type", ())))
 
-    if amount is None or posted is None:
+    if amount is None:
+        log.warning(
+            "email-scan %s parse-miss (no amount label) for message %s",
+            schema,
+            message_id,
+        )
+        return None
+    if posted is None:
         return None
 
     return EmailTxn(
@@ -412,22 +426,35 @@ def parse_debitcard_used(
     multi = len(blocks) > 1
     txns: list[EmailTxn] = []
     for i, block in enumerate(blocks):
-        amount = parse_amount(_label_value(block, _USED_BLOCK_LABELS["amount"]) or "")
+        # Fail-closed: parse only the labeled value, never the whole block/body.
+        amount_raw = _label_value(block, _USED_BLOCK_LABELS["amount"])
+        amount = parse_amount(amount_raw) if amount_raw is not None else None
         if amount is None:
             log.warning(
-                "email-scan SCHEMA-DEBITCARD-USED block %s of %s had no amount",
+                "email-scan SCHEMA-DEBITCARD-USED parse-miss (no amount) "
+                "block %s of %s",
                 i,
                 message_id,
             )
             continue
         last4 = parse_last4(_label_value(block, _USED_BLOCK_LABELS["last4"]) or "")
         merchant = _clean_merchant(_label_value(block, _USED_BLOCK_LABELS["merchant"]))
-        posted = parse_date(
-            _label_value(block, _USED_BLOCK_LABELS["date"]) or "", fallback_date
+        date_raw = _label_value(block, _USED_BLOCK_LABELS["date"])
+        posted = (
+            parse_date(date_raw, fallback_date) if date_raw is not None else fallback_date
         )
+        # No fabricated date: skip the block rather than invent date.today().
+        if posted is None:
+            log.warning(
+                "email-scan SCHEMA-DEBITCARD-USED parse-miss (no date) "
+                "block %s of %s",
+                i,
+                message_id,
+            )
+            continue
         txns.append(
             EmailTxn(
-                posted_date=posted or fallback_date or date.today(),
+                posted_date=posted,
                 amount=-abs(amount),
                 merchant=merchant,
                 last4=last4,
