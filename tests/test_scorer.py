@@ -6,6 +6,7 @@ from confirmed_ctl.matching.scorer import (
     _score_candidate,
     _score_date,
     _score_vendor,
+    get_candidate_transactions,
 )
 
 
@@ -69,3 +70,16 @@ def test_score_candidate_amount_mismatch_lowers_score():
     good = _score_candidate(_txn(425.00, "LA TIMES", d), _ad(425.00, "Los Angeles Times", d))
     bad = _score_candidate(_txn(999.00, "LA TIMES", d), _ad(425.00, "Los Angeles Times", d))
     assert bad < good
+
+
+def test_get_candidates_returns_empty_when_ad_has_no_dates():
+    # An ad with neither expected_charge_date nor run_date has no date anchor;
+    # this must degrade gracefully (empty list) rather than raise TypeError.
+    ad = AdPurchase(
+        expected_amount=100.0,
+        newspaper_name="Los Angeles Times",
+        expected_charge_date=None,
+        run_date=None,
+    )
+    # db is never touched because the guard returns before any query.
+    assert get_candidate_transactions(db=None, ad=ad) == []

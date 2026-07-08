@@ -40,6 +40,10 @@ def get_candidate_transactions(
     ad must have: expected_amount, newspaper_name, expected_charge_date (or run_date)
     """
     charge_date = ad.expected_charge_date or ad.run_date
+    if charge_date is None:
+        # Without a date anchor there is no window to search — return no
+        # candidates rather than raising, so the popup/CLI degrade gracefully.
+        return []
     window_start = charge_date - timedelta(days=lookback_days)
     window_end = charge_date + timedelta(days=2)  # charges can post slightly late
 
