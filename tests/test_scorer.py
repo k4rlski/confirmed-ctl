@@ -1,6 +1,6 @@
 from datetime import date
 
-from confirmed_ctl.db.models import AdPurchase, BankTransaction
+from confirmed_ctl.db.models import BankTransaction, CrmAd
 from confirmed_ctl.matching.scorer import (
     _score_amount,
     _score_candidate,
@@ -15,7 +15,7 @@ def _txn(amount, vendor, txn_date):
 
 
 def _ad(amount, newspaper, charge_date):
-    return AdPurchase(
+    return CrmAd(
         expected_amount=amount,
         newspaper_name=newspaper,
         expected_charge_date=charge_date,
@@ -75,7 +75,7 @@ def test_score_candidate_amount_mismatch_lowers_score():
 def test_get_candidates_returns_empty_when_ad_has_no_dates():
     # An ad with neither expected_charge_date nor run_date has no date anchor;
     # this must degrade gracefully (empty list) rather than raise TypeError.
-    ad = AdPurchase(
+    ad = CrmAd(
         expected_amount=100.0,
         newspaper_name="Los Angeles Times",
         expected_charge_date=None,

@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
 
-from ..db.models import AdPurchase, BankTransaction
+from ..db.models import BankTransaction, CrmAd
 
 # Configurable weights
 WEIGHT_AMOUNT = 0.50   # Exact or near-exact amount is strongest signal
@@ -30,14 +30,17 @@ KNOWN_MAPPINGS = {
 
 def get_candidate_transactions(
     db: Session,
-    ad: AdPurchase,
+    ad: CrmAd,
     lookback_days: int = 5,
     top_n: int = 8,
 ) -> list[dict]:
     """
     Return top_n ranked bank transactions as candidates for confirming this ad.
 
-    ad must have: expected_amount, newspaper_name, expected_charge_date (or run_date)
+    ``ad`` is a :class:`~confirmed_ctl.db.models.CrmAd` read view of the MariaDB
+    CRM record; it must have: expected_amount, newspaper_name, expected_charge_date
+    (or run_date). Candidates are the *unmatched* bank transactions
+    (``confirmed_ad_crm_id IS NULL``) inside the date window.
     """
     charge_date = ad.expected_charge_date or ad.run_date
     if charge_date is None:
@@ -53,7 +56,7 @@ def get_candidate_transactions(
         .filter(
             BankTransaction.txn_date >= window_start,
             BankTransaction.txn_date <= window_end,
-            BankTransaction.confirmed_ad_id.is_(None),
+            BankTransaction.confirmed_ad_crm_id.is_(None),
         )
         .all()
     )
@@ -68,7 +71,7 @@ def get_candidate_transactions(
     return scored[:top_n]
 
 
-def _score_candidate(txn: BankTransaction, ad: AdPurchase) -> float:
+def _score_candidate(txn: BankTransaction, ad: CrmAd) -> float:
     amount_score = _score_amount(float(txn.total_amount), float(ad.expected_amount))
     vendor_score = _score_vendor(txn.vendor_name, ad.newspaper_name)
     date_score = _score_date(txn.txn_date, ad.expected_charge_date or ad.run_date)

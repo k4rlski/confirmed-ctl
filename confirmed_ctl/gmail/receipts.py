@@ -86,7 +86,9 @@ def process_pending_receipts(db_session) -> dict:
 
             paths = download_receipt(
                 thread_id=conf.gmail_thread_id,
-                ad_number=conf.ad.ad_number if conf.ad else str(conf.ad_id),
+                # Ad is referenced logically (no ORM relationship): prefer the
+                # human ad number, fall back to the CRM record id.
+                ad_number=conf.ad_number or conf.ad_crm_id,
                 year=year,
                 month=month,
             )
