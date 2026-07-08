@@ -7,10 +7,17 @@ ingestion adapter must therefore always populate ``source_txn_id`` (it is never
 
 - **OFX exports (``export-ofx``)** — pass the statement's ``<FITID>`` through as
   ``source_txn_id``. FITID is the bank's own stable per-transaction id.
-- **Email-scan (``email-scan``) and CSV exports (``export-csv``)** — there is no
-  stable per-transaction id, so ``source_txn_id`` is a hex SHA-256 hash of the
-  normalized *natural key*: ``(source, posted_date ISO, amount, description /
-  merchant, last4)``.
+- **Email-scan (``email-scan``)** — the Gmail message id is a stable, unique
+  per-alert id. ``source_txn_id`` is derived DETERMINISTICALLY from it:
+  ``<message_id>`` for single-transaction (Type A) alerts, and
+  ``<message_id>:<line_index>`` for each line item of a batched (Type B) alert.
+  This sidesteps same-day/same-amount natural-key collisions and keeps re-scans
+  idempotent (see ``email_scan_source_txn_id``). It is fed through
+  ``deterministic_source_txn_id(..., fitid=<derived id>)`` so it is returned
+  verbatim.
+- **CSV exports (``export-csv``)** — there is no stable per-transaction id, so
+  ``source_txn_id`` is a hex SHA-256 hash of the normalized *natural key*:
+  ``(source, posted_date ISO, amount, description / merchant, last4)``.
 
 The natural-key hash is stable across re-ingestion runs of the same underlying
 transaction, so re-importing the same statement is a no-op (the unique
@@ -98,3 +105,27 @@ def deterministic_source_txn_id(
         )
     )
     return hashlib.sha256(natural_key.encode("utf-8")).hexdigest()
+
+
+def email_scan_source_txn_id(message_id: str, line_index: int | None = None) -> str:
+    """Deterministic ``source_txn_id`` for an email-scan transaction.
+
+    The Gmail ``message_id`` is stable and globally unique, so it makes an ideal
+    idempotency key that also keeps distinct alerts distinct (avoiding
+    same-day/same-amount natural-key collisions):
+
+    - **Type A** (one transaction per alert): ``<message_id>``.
+    - **Type B** (batched — multiple line items per alert): pass ``line_index``
+      (0-based) to get ``<message_id>:<line_index>`` per line item.
+
+    The result is routed through ``deterministic_source_txn_id`` as ``fitid`` so
+    it is returned verbatim and both ``source`` and ``source_txn_id`` stay
+    ``NOT NULL``.
+    """
+    message_id = str(message_id).strip()
+    if not message_id:
+        raise ValueError("email_scan_source_txn_id requires a non-empty message_id")
+    derived = message_id if line_index is None else f"{message_id}:{line_index}"
+    return deterministic_source_txn_id(
+        "email-scan", None, None, None, fitid=derived
+    )

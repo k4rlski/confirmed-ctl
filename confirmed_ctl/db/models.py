@@ -192,6 +192,8 @@ class SyncLog(Base):
     __tablename__ = "confirmed_ctl_sync_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The ingestion adapter that produced this run (e.g. ``email-scan``).
+    source: Mapped[str | None] = mapped_column(String(50))
     synced_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

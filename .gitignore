@@ -30,6 +30,9 @@ htmlcov/
 qbo_tokens.json
 gmail_token.json
 confirmed_ctl/qbo/tokens.json
+# Service-account key dir (deployed at secrets/google-service-account.json on
+# fang) — must NEVER be committable.
+secrets/
 
 # ChromaDB local store
 chroma_db/

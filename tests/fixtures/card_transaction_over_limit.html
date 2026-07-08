@@ -1,0 +1,529 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+ <meta charset="utf-8" /> 
+ <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+ <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+  
+ <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  
+ <style type="text/css">
+ /* CLIENT-SPECIFIC STYLES */
+ #outlook a{padding:0;} /* Force Outlook to provide a "view in browser" message */
+ .ReadMsgBody{width:100%;} .ExternalClass{width:100%;} /* Force Hotmail to display emails at full width */
+ .ExternalClass, .ExternalClass p, .ExternalClass span, .ExternalClass font, .ExternalClass td, .ExternalClass div {line-height: 100%;} /* Force Hotmail to display normal line spacing */
+ body, table, td, a{-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;} /* Prevent WebKit and Windows mobile changing default text sizes */
+ table, td{mso-table-lspace:0pt; mso-table-rspace:0pt;} /* Remove spacing between tables in Outlook 2007 and up */
+ img{-ms-interpolation-mode:bicubic;} /* Allow smoother rendering of resized image in Internet Explorer */
+ /* RESET STYLES */
+ body{margin:0; padding:0;}
+ img{border:0; height:auto; line-height:100%; outline:none; text-decoration:none;}
+ table{border-collapse:collapse !important;}
+ body{height:100% !important; margin:0; padding:0; width:100% !important;}
+ /* iOS BLUE LINKS */
+ .appleBody a {color:#68440a; text-decoration: none;}
+ .appleFooter a {color:#999999; text-decoration: none;}
+ ReadMsgBody{ width: 100%;}
+ .ExternalClass {width: 100%;}
+ .ExternalClass, .ExternalClass p, .ExternalClass span, .ExternalClass font, .ExternalClass td, .ExternalClass div {line-height: 100%;}
+ body {-webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;margin:0 !important; padding:0 !important;}
+ p { margin: 1em 0;}
+ table td { border-collapse: collapse;}
+ img {outline:0;}
+ a img {border:none;}
+ p {margin: 1em 0;}
+ @-ms-viewport{ width: device-width;}
+ a[x-apple-data-detectors] {color: inherit !important;text-decoration: none !important;font-size: inherit !important;font-family: inherit !important; font-weight: inherit !important;line-height: inherit !important;}
+ @media only screen and (max-width: 480px) {
+ body[yahoo] .tbContainer { width:100% !important; }
+ body[yahoo] .tdMobHeaderImage { padding-top:30px !important;padding-bottom:0px !important; }
+ body[yahoo] .imgMobSize163x21 { max-width:163px !important; max-height:21px !important;}
+ body[yahoo] .imgMobSize280x58 { max-width:280px !important; max-height:58px !important;}
+ body[yahoo] .BofA_2019_228x23 { max-width:228px !important; max-height:23px !important; padding-left:84px; padding-right:64px}
+ body[yahoo] .imgMobSize70x70 { width:70px !important; height:70px !important;}
+ body[yahoo] .tdMobAlertImage { padding-top:30px !important; padding-bottom:0px !important; }
+ body[yahoo] .tdMobZ1tbl { width:335px !important; display: block !important;}
+ body[yahoo] .tdMobZ1tbl1 { width:335px !important; display: block !important;padding-bottom:30px !important;}
+ body[yahoo] .tdMobZ1tbl2 { width:335px !important; display: block !important;padding-bottom:0px !important;}
+ body[yahoo] .tdMobTitle { display: block !important;font-size:28px !important;padding-bottom:30px !important;}
+ body[yahoo] .tdMobZ1BottomPadding30px { display: block !important;font-size:24px !important;padding-bottom:30px !important; padding-top:30px !important; padding-left:20px !important;padding-right:20px !important}
+ body[yahoo] .tdMobZ1 { display: block !important;font-size:24px !important;padding-bottom:0px !important; padding-top:30px !important; padding-left:20px !important;padding-right:20px !important}
+ body[yahoo] .tdMobZ1BottomNew { display: block !important;font-size:24px !important;padding-top:30px !important; padding-left:20px !important;padding-right:20px !important} 
+ body[yahoo] .tdMobZ2tbl { width:335px !important; align:center !important;}
+ body[yahoo] .tdMobZ2 { display: block !important; padding-left:45px !important;padding-right:20px !important}
+ body[yahoo] .tdMobZ2TopPadding18px { display: block !important;padding-top:18px !important;padding-left:45px !important;padding-right:20px !important}
+ body[yahoo] .tdMobZ2TopPadding30px { display: block !important;padding-top:30px !important;padding-left:45px !important;padding-right:20px !important}
+ body[yahoo] .tdMobTopPadding0px { display: block !important;padding-top:0px !important;padding-left:45px !important;padding-right:20px !important}
+ body[yahoo] .tdMobZ2tbllabel { display: block !important; font-size:16px !important; padding-bottom:12px !important; line-height:20px !important; text-align:left !important;}
+ body[yahoo] .tdMobZ2tbllabelinline { font-size:16px !important; padding-bottom:12px !important; padding-right:5px !important; line-height:20px !important; text-align:left !important;}
+ body[yahoo] .tdMobZ2tbllabel1 { display: block !important; font-size:16px !important; padding-bottom:12px !important; line-height:20px !important; text-align:left !important; margin-left:10px !important;}
+ body[yahoo] .tdMobZ2tbllabel2 { display: block !important; font-size:16px !important; padding-bottom:0px !important; line-height:20px !important; text-align:left !important;}
+ body[yahoo] .tdMobZ2tbllabel3 { display: block !important; font-size:16px !important; padding-bottom:0px !important; line-height:20px !important; text-align:left !important; width:100% !important;}
+ body[yahoo] .tdMobZ2tbllabel3a { display: block !important; font-size:16px !important; padding-bottom:0px !important; line-height:20px !important; text-align:left !important; width:100% !important; padding-bottom:12px}
+ body[yahoo] .tdMobZ2tbllabel3a1 { display: block !important; font-size:16px !important; padding-bottom:0px !important; line-height:20px !important; text-align:left !important; width:100% !important; padding-bottom:30px}
+ body[yahoo] .tdMobZ2tblData { font-size:16px !important;line-height:20px !important; text-align:left !important;}
+ body[yahoo] .tdMobZ2tblData1 { font-size:16px !important;line-height:24px !important; text-align:left !important; padding-bottom:12px !important;}
+ body[yahoo] .tdMobZ2tblData2 { font-size:16px !important;line-height:24px !important; text-align:left !important; width:175px !important;}
+ body[yahoo] .tdMobZ2atblData2 { font-size:16px !important;line-height:24px !important; text-align:right !important; width:175px !important;}
+ body[yahoo] .tdMobZ2atblData2a { font-size:16px !important;line-height:24px !important; text-align:right !important; width:175px !important; padding-bottom:12px}
+ body[yahoo] .tdMobZ2atblData2a1 { font-size:16px !important;line-height:24px !important; text-align:right !important; width:175px !important; padding-bottom:30px}
+ body[yahoo] .tdMobContentZ2Font { display: block !important;font-size:18px !important;} 
+ body[yahoo] .tdMobTitleDetails { display: block !important;font-size:18px !important; padding-bottom:30px !important;}
+ body[yahoo] .zone3-message-img1 { display:block !important; width: 30px !important;  height:30px !important;padding-top:0px !important;padding-bottom: 25px !important;padding-left:48px !important;}
+ body[yahoo] .zone3-message-body2 { display:block !important; padding-top:0px !important;padding-bottom: 30px !important;padding-left:15px !important;font-size:14px !important;line-height:18px !important;}
+  
+    body[yahoo] .tblMobZ5Content4new1 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:0px !important; padding-top:20px !important;   font-size:16px !important; line-height:20px !important;}
+    body[yahoo] .tblMobZ5Content4border { width:300px !important; text-align:left !important;border: 1px solid #979797  !important; align:center !important; padding-bottom:0px !important;   font-size:16px !important; padding-right:10px; !important;line-height:20px !important;}
+   body[yahoo] .zone3-message-body22 { width:335px !important; text-align:center !important;align:center !important; padding-bottom:0px !important; padding-top:20px !important; padding-left:0px !important; padding-right:0px !important;margin:0px !important;font-size:16px !important; line-height:20px !important;}
+       body[yahoo] .zone3-message-body23 { width:335px !important; text-align:center !important;align:center !important; padding-bottom:20px !important; padding-top:0px !important;   font-size:16px !important; line-height:20px !important;} 
+    body[yahoo] .zone3-message-img11 { display:block !important; width: 17px !important;  height:30px !important;padding-top:60px !important;padding-bottom: 25px !important;padding-left:18px !important;}
+    body[yahoo] .tblMobZ5new { width:335px !important;height:114px !important; text-align:center !important;align:center !important; padding-bottom:0px !important;}
+   
+    body[yahoo] .tdMobAlertImage33 { padding-top:60px !important; padding-bottom:0px !important;padding-left:30px !important;  }
+   
+    body[yahoo] .zone4-message-body1 { display:block !important; padding-top:0px !important;padding-bottom: 18px !important;padding-left:18px !important;font-size:16px !important;line-height:20px !important;padding-right:18px !important;}
+   
+ body[yahoo] .zone3-message-bodyNew { display:block !important; padding-top:0px !important;padding-bottom: 0px !important;padding-left:15px !important;font-size:14px !important;line-height:18px !important;}
+ body[yahoo] .tblMobZ3 { width:335px !important;text-align:center !important;align:center !important; }
+ body[yahoo] .tdMobZ3TopPadding18px { display: block !important;padding-top:18px !important;}
+ body[yahoo] .tdMobZ3TopPadding30px { display: block !important;padding-top:30px !important;}
+ body[yahoo] .tdMobZ3 { display: block !important;padding-top:0px !important;}
+ body[yahoo] .tdMobBottomPadding30px { display: block !important;padding-bottom:30px !important;}
+ body[yahoo] .tblMobZ3Content1 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:20px !important; }
+ body[yahoo] .tblMobZ3Content1New { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:20px !important; }
+ body[yahoo] .tblMobZ3Content2 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important;padding-top:0px !important;}
+ body[yahoo] .tblMobZ3Content3 { display: list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important;}
+ body[yahoo] .tblMobZ3Content31 { display: list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:12px !important;} 
+ body[yahoo] .tblMobZ3Content6 { display: list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important; padding-top:15px !important;}
+ body[yahoo] .tblMobZ3Content4 { display:list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; }
+ body[yahoo] .tblMobZ3Content4New { display:list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:12px !important;}
+ body[yahoo] .tblMobZ3Content5 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important; }
+ body[yahoo] .tblMobZ3Content8 { display:list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:20px !important;}
+ body[yahoo] .tblMobZ3Content7 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:20px !important;}
+ body[yahoo] .tblMobZ3Content9 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:30px !important;}
+   body[yahoo] .tblMobZ3Content9New4 { display: block !important; font-size:12px !important; line-height:16px !important; text-align:left !important; padding-bottom:0px !important;}
+ body[yahoo] .tblMobZ3Content13 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important; padding-top:30px !important;}
+ body[yahoo] .tblMobZ3Content14 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:30px !important; padding-bottom:12px !important; }
+ body[yahoo] .tblMobZ3Content9New1 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:30px !important;}
+ body[yahoo] .tblMobZ3Content9New2 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:30px !important; padding-bottom:30px !important;}
+ body[yahoo] .tblMobZ3Content9New3 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:center !important; padding-top:30px !important; padding-bottom:30px!important;} 
+ body[yahoo] .tblMobZ3Content9center { display: block !important; font-size:16px !important; line-height:20px !important; text-align:center !important; padding-bottom:30px !important;}
+ body[yahoo] .tblMobZ3Content9Bottom { display: block !important; font-size:16px !important; line-height:22px !important; text-align:center !important; padding-bottom:10px !important;}
+    body[yahoo] .tblMobZ3Content9CenterNoPadding { display: block !important; font-size:16px !important; line-height:22px !important; text-align:center !important; padding-bottom:0px !important;}
+ body[yahoo] .tblMobZ3Content10 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:12px !important; }
+ body[yahoo] .tblMobZ3Content11 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-top:15px !important; padding-bottom:0px !important;}
+ body[yahoo] .tblMobZ3Content51 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:12px !important; padding-left:25px !important; }
+ body[yahoo] .tblMobZ3Content21 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:20px !important; padding-top:0px !important;}
+ body[yahoo] .tblMobZ3Content21New{ display: block !important; font-size:12px !important; line-height:16px !important; text-align:left !important; padding-bottom:20px !important; padding-top:0px !important;}
+ body[yahoo] .tblMobZ3Content52 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important; padding-left:25px !important; }
+ body[yahoo] .bulletTopPadding { display:list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important; padding-top:12px !important;}
+ body[yahoo] .tblMobZ3ContentPadding  { width: 343px !important; padding-bottom:30px !important; padding-top:0px !important; padding-right:16px !important; padding-left:16px !important;} 
+ body[yahoo] .tblMobZ3Bulletpadding { display: block !important; padding-bottom:15px !important; colspan:2 !important;}
+ body[yahoo] .tblMobZ4 { width:335px !important;text-align:center !important;align:center !important;} 
+ body[yahoo] .tblMobZ4ButtonPadding { padding-bottom:30px !important; padding-top:30px !important;} 
+ body[yahoo] .tblMobZ4ButtonPadding1 { padding-bottom:0px !important; padding-top:18px !important;} 
+ body[yahoo] .tblMobZ4ButtonPadding2 { padding-bottom:0px !important; padding-top:30px !important;}
+ body[yahoo] .tdMobButtonZ4 { font-size:20px !important; line-height:45px !important; width:335px !important; border-left:0px solid #0052C2 !important; border-right:0px solid #0052C2 !important; border-top:0px solid #0052C2 !important; border-bottom:0px solid #0052C2 !important; text-align:center !important; align:center !important;}
+ body[yahoo] .tblMobZ5 { width:335px !important;text-align:center !important;align:center !important; padding-bottom:0px !important;}
+ body[yahoo] .tblMobZ5Content { width:335px !important; text-align:left !important;align:center !important; padding-bottom:20px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content1 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:10px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content2 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:50px !important; font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content3 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:30px !important; font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content4 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:0px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content5 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:40px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content6 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:30px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content7 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:40px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content8 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:15px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tdMobAltButtonZ4 { width:335px !important; text-align:left !important;align:center !important; font-size:16px !important; line-height:20px !important; padding-bottom:0px !important; padding-top:20px !important; font-family: Connections Light, Arial !important;}
+ body[yahoo] .tdMobAltButtonZ4px14 { width:335px !important; text-align:left !important;align:center !important; font-size:14px !important; line-height:14px !important; padding-bottom:0px !important; padding-top:20px !important; font-family: Connections Light, Arial !important;}
+ body[yahoo] .tblMobFootnoteZ7 { display: block !important; width:335px !important;text-align:center !important;align:center !important;}
+ body[yahoo] .tdMobFootnoteZ7 { padding-top:20px !important;width:335px !important;font-size:11px !important;}
+ body[yahoo] .tdMobFootnoteZ72 { padding-top:30px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnoteZ72Left { padding-top:30px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important; text-align:left !important; margin:0px !important} 
+ body[yahoo] .tdMobFootnoteZ73 { padding-top:20px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnoteZ74 { padding-top:0px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnoteZ75 { padding-top:15px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnoteZ76 { padding-top:15px !important; Margin-left:0px !important; padding-bottom:0px !important; max-width:300px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnoteZ77 { padding-top:0px !important; padding-bottom:30px !important; width:335px !important;font-size:11px !important; line-height:13px !important;}
+ body[yahoo] .tdMobFootnotetopbottompadding0{ display: block !important; width:335px !important; font-size:16px !important; line-height:20px !important; text-align:center !important; padding-bottom:0px !important; padding-top:0px !important;}
+ body[yahoo] .tdMobFooter { font-size:11px !important;line-height:13px !important;}
+ body[yahoo] .tdMobFooter1 { font-size:11px !important;}
+ body[yahoo] .tdMobFooter2 { font-size:11px !important;line-height:16px !important;}
+ body[yahoo] .tdMobFooter3 { font-size:11px !important;line-height:13px !important; width:335px !important;}
+ body[yahoo] .tdMobFooter4 { font-size:11px !important; padding-bottom:30px !important;}
+ body[yahoo] .tdMobFooterTitle { font-size:15px !important; width:100% !important; max-width:100% !important; padding-bottom:20px !important;}
+ body[yahoo] .tdMobFooterContent { font-size:15px !important; width:100% !important; max-width:100% !important; padding-bottom:20px !important; padding-left:55px !important;}
+ body[yahoo] .tdMobFooterContent2 { font-size:15px !important; width:100% !important; max-width:100% !important;  padding-left:55px !important;}
+ body[yahoo] .tdMobFooterContent3 { font-size:15px !important; width:100% !important; max-width:100% !important; padding-bottom:20px !important; padding-left:75px !important;}
+ body[yahoo] .tdMobFooterContent3New { font-size:15px !important; width:100% !important; max-width:100% !important; padding-bottom:20px !important; padding-left:55px !important;}
+ body[yahoo] .tdMobFooterContent4 { font-size:15px !important; width:100% !important; max-width:100% !important;  padding-left:75px !important;}
+ body[yahoo] .tdMobFooterContent4New { font-size:15px !important; width:100% !important; max-width:100% !important;  padding-left:55px !important;}
+ body[yahoo] .imgMobContainerZ6 { width:40px !important; height:40px !important; padding-right:15px !important; }
+ body[yahoo] .imgMobContainerZ6New { width:40px !important; height:40px !important; padding-right:15px !important; margin-top:0px !important;}
+ body[yahoo] .imgMobContainerZ7 { width:30px !important; height:30px !important; padding-right:15px !important; }
+ body[yahoo] .tdMobHr { display: block !important;width:335px !important; }
+ body[yahoo] .tdMobZ6 { display: block !important; width:100% !important;text-align:center !important;align:center !important; float:center !important;}
+ body[yahoo] .tblMobContainerTableZ6 { width:100% !important; text-align:center !important;align:center !important;} 
+ body[yahoo] .tdMobZ62 { display: block !important; width:335px !important;text-align:center !important;align:center !important; float:center !important;}
+ body[yahoo] .tblMobContainerTableZ62 { width:335px !important; text-align:center !important;align:center !important;} 
+ body[yahoo] .tdMobTopPadding40px { padding-top:40px !important;} 
+ body[yahoo] .tdMobContentHr { display: block !important;}
+ body[yahoo] .tdDeskHr { display: none !important; }
+ body[yahoo] .tdDeskContentHr { display: none !important;  }
+ body[yahoo] .tdMobContainerZ6description1 { width:100% !important; max-width:100% !important; }
+ body[yahoo] .tdMobContainerZ6description2 { width:100% !important; max-width:100% !important; }
+ body[yahoo] .tdMobZ3 { width:335px !important; max-width:100% !important; }
+ body[yahoo] .tdMobButtonZ3 { font-size:20px !important; line-height:45px !important; width:320px !important; border-left:0px solid #0052C2 !important; border-right:0px solid #0052C2 !important; border-top:0px solid #0052C2 !important; border-bottom:0px solid #0052C2 !important; text-align:center !important; align:center !important;}
+ body[yahoo] .imgDeskDisp { display:none !important; }
+ body[yahoo] .title-spacer { width:10px !important; align:top !important;}
+ body[yahoo] .footer-class { padding-left:45px !important; padding-right:45px !important; padding-top:40px !important;}
+ body[yahoo] .footer-class1 { padding-left:45px !important; padding-right:45px !important; padding-top: 50px !important;}
+ body[yahoo] .footer-class2 { padding-left:65px !important; padding-right:65px !important;}
+ body[yahoo] .bullet-list { padding-left:18px !important;}
+ body[yahoo] .zone2-data-table-Bamd18 table { width:56px !important;}
+ body[yahoo] .zone2-data-table-Bamd19 { width:56px !important; }
+ body[yahoo] .zone2-data-table-Bamd22{ padding-left:20px !important;}
+ body[yahoo] .zone2-data-table-Bamd29a table { width:42px !important;}
+ body[yahoo] .zone2-data-table-Bamd30 table { width:7px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd31  { width:42px !important; height:14px !important; font-size:11px !important; line-height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd1 { width:07px !important; height:7px !important;}
+ body[yahoo] .zone2-data-table-Bamd1a { width:03px !important; height:7px !important;}
+ body[yahoo] .zone2-data-table-Bamd1b img{ width:03px !important; height:7px !important;}
+ body[yahoo] .zone2-data-table-Bamd2 { width:49px !important; height:6px !important;}
+ body[yahoo] .zone2-data-table-Bamd2a img{ width:47px !important; height:6px !important;}
+ body[yahoo] .zone2-data-table-Bamd3a { width:14px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd4 { width:07px !important; height:42px !important;}
+ body[yahoo] .zone2-data-table-Bamd4a { width:03px !important; height:42px !important;} 
+ body[yahoo] .zone2-data-table-Bamd4c img{ width:07px !important; height:42px !important;}
+ body[yahoo] .zone2-data-table-Bamd4b img{ width:03px !important; height:42px !important;} 
+ body[yahoo] .zone2-data-table-Bamd5a { width:42px !important; height:42px !important;}
+ body[yahoo] .zone2-data-table-Bamd5 img { width:100% !important; height:100% !important;}
+ body[yahoo] .zone2-data-table-Bamd12 { width:7px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd12a img { width:7px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd14 { width:3px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd14a img{ width:3px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd17 { width:3px !important; height:72px !important;}
+ body[yahoo] .zone2-data-table-Bamd17a img { width:1px !important; height:72px !important;}
+ body[yahoo] .zone2-data-table-Bamd21 { width:3px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd21a img { width:3px !important; height:14px !important;}
+ body[yahoo] .zone2-data-table-Bamd24 { width:7px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd24a img{ width:7px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd28 {  width:42px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd28a img{ width:42px !important; height:07px !important;}
+ body[yahoo] .zone2-data-table-Bamd32a img{ width:3px !important; height:09px !important;}
+ body[yahoo] .zone2-data-table-Bamd32 { width:3px !important; height:09px !important;}
+ body[yahoo] .zone2-data-table-Bamd35 { width:56px !important; height:09px !important;}
+ body[yahoo] .zone2-data-table-Bamd35a img{ width:56px !important; height:09px !important;}
+ body[yahoo] .zone2-data-table-Bamd36 { width:7px !important; height:09px !important;}
+ body[yahoo] .zone2-data-table-Bamd36a img{ width:7px !important; height:09px !important;}
+ body[yahoo] .tblMobZ2Content { width:335px !important; text-align:left !important;align:center !important; padding-bottom:30px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tdMobZ5tblData-BA360 { font-size:16px !important;line-height:20px !important; text-align:left !important;}
+ body[yahoo] .tblMobZ5Content-BA360 {  text-align:left !important;align:center !important; padding-bottom:12px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content-BA360-zone1fontsize {  text-align:left !important;align:center !important; padding-bottom:12px !important;   font-size:24px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content-BA360-1 {  text-align:left !important;align:center !important; padding-bottom:10px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5Content-BA360-2 {  text-align:left !important;align:center !important; padding-bottom:20px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5aContent-BA360 {  text-align:right !important;align:center !important; padding-bottom:12px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5aContent-BA360-1 {  text-align:right !important;align:center !important; padding-bottom:10px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .tblMobZ5TopPadding-BA360 { padding-top:20px !important;}
+ body[yahoo] .tblMobZ3ButtonPadding-BA360 { padding-bottom:10px !important;}
+ body[yahoo] .zone1padding1 { display: block !important;font-size:24px !important;padding-bottom:30px !important; padding-top:0px !important; padding-left:0px !important;padding-right:0px !important;line-height:28px !important;}
+ body[yahoo] .zone1padding2 {display: block !important;font-size:24px !important;padding-bottom:0px !important; padding-top:30px !important; padding-left:0px !important;padding-right:0px !important;line-height:28px !important;}
+ body[yahoo] .tblMobZ3Content12 { display: list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:12px !important;}
+ body[yahoo] .tblMobZ3Content12a { display: list-item !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important;}
+ body[yahoo] .tdMobz1width { font-size:20px !important; height:30px !important; width:320px !important; border-left:0px solid #FFFFFF !important; border-right:0px solid #FFFFFF !important; border-top:0px solid #FFFFFF !important; border-bottom:0px solid #FFFFFF !important; text-align:center !important; align:center !important;}
+ body[yahoo] .tdMobTitleDetailsBottom0px { display: block !important;font-size:18px !important; padding-bottom:0px !important;}body[yahoo] .tdMobTitleDetailsBottom0px { display: block !important;font-size:18px !important; padding-bottom:0px !important;}
+ body[yahoo] .tdMobAlertIcon { display: block !important;width:335 !important; padding-top:30px !important; padding-bottom:0px !important; }
+ body[yahoo] .dataTableColumn1 { font-size:13px !important;padding-top:10px !important; padding-bottom:10px !important;}
+ body[yahoo] .dataTableColumn2 { font-size:16px !important;padding-bottom:10px !important;}
+ body[yahoo] .dataTableColumn2OneValue { font-size:16px !important;padding-top:10px !important; padding-bottom:10px !important;}
+ body[yahoo] .dataTableTotalVerbiage { padding-top:10px !important; padding-bottom:10px !important;padding-left:10px !important;}
+ body[yahoo] .dataTableTotalValue { padding-top:10px !important; padding-bottom:10px !important;padding-right:10px !important;}
+ body[yahoo] .tblMobZ2Content1 { width:335px !important; text-align:left !important;align:center !important; padding-bottom:0px !important;   font-size:16px !important; line-height:20px !important;}
+ body[yahoo] .BofA_2019_70x70 { max-width:70px !important; align:center !important; max-height:70px !important; padding-left:133px; padding-right:132px}
+ body[yahoo] .tblMobZ1topbottompadding30{ display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:30px !important; padding-top:30px !important;}
+ body[yahoo] .tblMobZ2Contenttoppadding0 { display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:30px !important;padding-top:0px !important; }
+ body[yahoo] .tblMobZ1topbottompadding0{ display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:0px !important; padding-top:0px !important;}
+ body[yahoo] .drop-down-data { display:block !important; width: 100% !important; float:left; clear:both;}
+ body[yahoo] .tblMobBrandingZ5 { display: block !important; text-align:center !important;align:center !important;padding-bottom:0px !important;}
+ body[yahoo] .imgMobBrandingZ5img { width:189px !important;height:14px !important;align:center !important;padding-bottom:50px !important;}
+ body[yahoo] .imgMobBrandingZ5 { max-width:189px !important; max-height:14px !important; padding-bottom:0px !important; padding-top:0px !important;}
+ body[yahoo] .title-spacer1 { width:95px !important; align:right !important;  }
+ body[yahoo] .tblMobZ1zone1padding{ display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important; padding-top:30px !important;}
+ body[yahoo] .tblMobZ1zone1padding1{ display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important; padding-top:15px !important;}
+ body[yahoo] .tblMobZ1zone1padding2{ display: block !important; font-size:16px !important; line-height:20px !important; text-align:left !important; padding-bottom:15px !important; padding-top:0px !important;}
+ body[yahoo] .tdMobFootnoteZ72Left { padding-top:30px !important; padding-bottom:0px !important; width:335px !important;font-size:11px !important; line-height:13px !important; text-align:left !important;}
+ body[yahoo] .tdMobFootnoteZ72Left2 { padding-top:30px !important; padding-bottom:10px !important; width:335px !important;font-size:11px !important; line-height:13px !important; text-align:left !important;}
+ body[yahoo] .zone3-message-body3 { display:block !important; padding-top:0px !important;padding-bottom: 0px !important;padding-left:15px !important;font-size:14px !important;line-height:18px !important;}
+ body[yahoo] .bamd-spacer { width:4px !important; height:119px !important;}
+ body[yahoo] .bamd-spacerimg img { width:4px !important; height:119px !important;}
+ body[yahoo] .tblMobZ3Content9Right { font-size:16px !important;line-height:24px !important; text-align:right !important; padding-bottom:30px !important;}
+ body[yahoo] .tdMobZ2tblDataRight { font-size:16px !important;line-height:20px !important; text-align:right !important;}
+ body[yahoo] .zone3-message-body3 { display:block !important; padding-top:0px !important;padding-bottom: 10px !important;padding-left:15px !important;font-size:14px !important;line-height:18px !important;}
+ body[yahoo] .tdMobBottomPadding40px { padding-bottom:40px !important;}
+ body[yahoo] .tdMobTopPadding0px { padding-top:0px !important;}
+ body[yahoo] .tdMobZ2tbl2 { width:275px !important; align:center !important;}
+ body[yahoo] .tdwidth { width:125px !important; } 
+ }
+ @media only screen and (max-width: 640px) {
+ body[yahoo] .tbContainer { width:100% !important; }
+ }
+ @media only screen and (min-width: 481px) {
+ body[yahoo] .imgMobDisp { display:none !important; }
+ }
+   
+
+   
+ </style> 
+</head>
+<body bgcolor="#FAFAFA" text="#000000" style="background-color: #FAFAFA; color: #000000; margin: 0px; padding:0px; -webkit-text-size-adjust:none;" yahoo="fix">
+<table width="100%" border="0" cellpadding="0" cellspacing="0" align="center">
+ <tr>
+  <td align="center">
+  <table cellspacing="0" cellpadding="0" border="0" width="600" class="tbContainer" align="center">
+   <tr>
+    <td>
+    <table cellspacing="0" cellpadding="0" border="0" bordercolor="#000000" bgcolor="#FAFAFA" width="100%">
+     <!-- Zone 00 - Bofa Image Header - Begins -->
+     <tr>
+      <td align="center" valign="top">
+      <table cellpadding="0" cellspacing="0" border="0" mcdisabled-bordercolor="" width="100%" mcdisabled-bgcolor="">
+       <tr>
+        <td valign="top" align="center">
+        <table width="100%" bgcolor="#FAFAFA" border="0" mcdisabled-bordercolor="" cellpadding="0" cellspacing="0">
+         <tr>
+          <td class="tblMobZ5TopPadding-BA360" style="text-align: center; padding-top: 32px; padding-bottom: 0px; padding-left: 0px; margin: 0px; valign: top;">
+            <img width="227" height="23" id="image-top-bofa" src="https://www.bankofamerica.com/content/images/ContextualSiteGraphics/Logos/en_US/BofA_2019_307x31.png" border="0" alt="Bank of America." style="width: 227px; height: 23px;">
+          </td>
+         </tr>
+        </table>
+        </td>
+       </tr>
+      </table>
+      </td>
+     </tr>
+     <!-- Zone 00 - Bofa Image Header - Ends-->
+     <tr>
+      <td align="center" valign="top">
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="min-width: 100%; " class="stylingblock-content-wrapper"><tr><td class="stylingblock-content-wrapper camarker-inner"><table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="min-width: 100%; " class="stylingblock-content-wrapper"><tr><td class="stylingblock-content-wrapper camarker-inner"><style>
+@media only screen and (max-width: 480px) {
+   body[yahoo] .tblMobWidth {
+    width:343px !important;
+ text-align:center !important;
+  }
+ }
+@media only screen and (max-width: 480px) {
+    body[yahoo] .tdFoot td{
+      padding-top:0px !important;
+ }
+ }
+  @media only screen and (max-width: 480px) {
+    body[yahoo] .toppadd{
+      padding-top:0px !important;
+      padding-bottom:20px !important;
+ }
+ }
+ @media only screen and (max-width: 480px) {
+    body[yahoo] .mobt2{
+      padding-bottom:40px !important;
+ }
+ }
+  @media only screen and (max-width: 480px) {
+    body[yahoo] .tdFoot td{
+      padding-top:0px !important;
+ }
+ }
+ @media only screen and (max-width: 480px) {
+    body[yahoo] .new2 {
+  width: 143.5px !important;
+    }
+}
+@media only screen and (max-width: 480px) {
+    body[yahoo] .new1 {
+  width: 151.5px !important;
+    }
+}
+@media only screen and (max-width: 480px) {
+    body[yahoo] .alignment {
+  width: 157.5px !important;
+    }
+}
+</style>
+<table align="Center">
+ <tr>
+  <td align="Center" valign="top">
+  <table class="tblMobWidth" width="568" cellpadding="0" cellspacing="0" border="0" align="center">
+  <tr>
+    <td style="margin: 0px;padding-top: 28px; padding-bottom: 28px; text-align: center;valign: top;">
+     <img class="imgMobSize70x70" id="image-Zone1" border="0" src="https://www.bankofamerica.com/content/images/ContextualSiteGraphics/alerts/bofa_icon_card2_red_70x70.png" alt="ATM/Debit Card">
+     </td></tr>
+  <tr><td align="top" valign="top" style="width: 568px; text-align: center; color: black; font-size: 24px; font-family: Connections,arial; font-weight: 400; line-height: 29px; letter-spacing: 0.30px; word-wrap: break-word;padding-bottom:20px;">
+    A debit/ATM card transaction <br> occurred over the limit you set
+</td></tr>
+<!-- horizontal line begins -->
+ <tr>
+  <td style="padding: 0px 0px 0px 0px; background-color: #D5D5D5; width: 100%; height: 1px; min-width: 343px; max-width: 568px; opacity: 1;"></td>
+ </tr>
+ <!-- horizontal line ends -->
+  </table>
+  </td>
+ </tr>
+ <tr>
+  <td align="Center">
+  <table class="tblMobWidth" width="600" cellpadding="0" cellspacing="0" border="0" align="center">
+   <tr>
+    <td width="465px" valign="top">
+    <table width="100%" valign="bottom" cellpadding="0" cellspacing="0" border="0" align="center">
+     <tr>
+      <td style="padding-top:20px;">
+      <!-- Zone 2 Table Begins -->
+      <table class="tblMobWidth" width="100%" valign="bottom" cellpadding="0" cellspacing="0" border="0" align="center">
+       <tr>
+        <td class="toppadd" style="padding-top:12px; padding-bottom:32px; padding-right:16px; padding-left:16px;">
+        <!-- Zone 2 Data table - Begins -->
+      <table class="tblMobWidth" style="border-collapse: separate !important; width: 568px; border-radius: 12px;background: white; box-shadow: 0px 1.9941860437393188px 19.94186019897461px rgba(0, 0, 0, 0.12); " valign="bottom" cellpadding="0" cellspacing="0" border="0" align="center">
+         <tr>
+          <td class="new2" style="border-bottom: 1px solid #D5D5D5;width:256px; padding-top: 14px; padding-left:14px;padding-right:14px;padding-bottom:14px; text-align: left; line-height:20px; font-size: 16px;font-weight: 400; font-family: Connections,arial;word-break: break-word;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+          Amount
+          </td>
+           <td class="new1" style="border-bottom: 1px solid #D5D5D5;width:264px; padding-top:14px; padding-right: 20px; padding-bottom: 14px;  font-size: 16px; font-weight: 700; Line-height: 20px;text-align: right;font-family: Connections,arial;word-break: break-word;color: rgb(0, 0, 0);" valign="top" align="left">
+           <b> $2,000.00</b>
+          </td>
+         </tr>
+         <tr>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px; padding-top: 14px; padding-left:14px;padding-bottom:14px; text-align: left; line-height:20px; font-size: 16px;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+          Debit/ATM card
+          </td>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px;padding-top:14px; padding-right: 14px;  padding-bottom: 14px; font-size: 16px; Line-height: 20px;text-align: right;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+           <b>ending in 5723</b>
+          </td>
+         </tr>
+         <tr>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px; padding-top: 14px; padding-left:14px;padding-bottom:14px; text-align: left; line-height:20px; font-size: 16px;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+          Merchant
+          </td>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px;padding-top:14px; padding-right: 14px;  padding-bottom: 14px; font-size: 16px; Line-height: 20px;text-align: right;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+        <b>  SA EXPRESS NEWS ADV   -SAN ANTONIO  ,TX </b>
+          </td>
+         </tr> 
+         <tr>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px; padding-top: 14px; padding-left:14px;padding-bottom:14px; text-align: left; line-height:20px; font-size: 16px;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+          Transaction type
+          </td>
+          <td class="alignment" style="border-bottom: 1px solid #D5D5D5;width:270px;padding-top:14px; padding-right: 14px;  padding-bottom: 14px; font-size: 16px; Line-height: 20px;text-align: right;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+        <b>   PURCH W/O PIN </b>
+          </td>
+         </tr> 
+         <tr>
+          <td class="alignment" style="width:270px; padding-top: 14px; padding-left:14px;padding-bottom:14px; text-align: left; line-height:20px; font-size: 16px;font-family: Connections,arial;white-space: nowrap;color: rgb(0, 0, 0);" valign="bottom" align="left">
+          Date
+          </td>
+          <td class="alignment" style="width:270px;padding-top:14px; padding-right: 14px;  padding-bottom: 14px; font-size: 16px; Line-height: 20px;text-align: right;font-family: Connections,arial;word-break:break-word;color: rgb(0, 0, 0);" valign="bottom" align="left">
+        <b>  July 08, 2026 </b>
+          </td>
+         </tr>    
+       </table>
+          </td></tr>  
+        <!-- Zone 2 Data table - Ends -->
+       <tr>
+        <td class="mobt2">         
+        <!-- Primary CTA Button - Begins-->        
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
+         <tr>
+          
+             <td align="center" style="height: 36px !important; width: 155px !important; border-radius: 999px !important; padding: 0px" bgcolor="#012169">
+     <a class="aMobButton" style="color: rgb(255, 255, 255); line-height: 36px !important; height: 36px !important; font-family: Connections, arial; font-size: 14px !important; text-decoration: none; display: inline-block; background-color: #012169; -webkit-text-size-adjust: none; letter-spacing: 0.5px; text-align: center;" href="https://www.bankofamerica.com/myaccounts/public/brain/redirect.go?target=activity&request_locale=en_US&customize=eyJhY3Rpdml0eVRva2VuIjoiMDM1MyJ9&source=DebitchargeX"><b>VIEW DETAILS</b></a>
+</td></tr>
+        </table>
+        <!-- Primary CTA Button - Ends -->
+        </td>
+       </tr>
+      </table>
+      <!-- Zone 2 Table ends -->
+      </td>
+     </tr>
+    </table>
+    </td>
+   </tr>
+  </table>
+</td></tr>
+</table>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+  <tr><td class="tdFoot" style="padding-right:20px;padding-left:20px;"> 
+     <table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="background-color: transparent; min-width: 100%; " class="stylingblock-content-wrapper"><tr><td style="padding: 0px; " class="stylingblock-content-wrapper camarker-inner"><style>
+  @media only screen and (max-width: 480px) {
+    body[yahoo] .imgMobFooter {
+    border: none !important;
+      width: 14.956px !important;
+      height: 9.311px !important;
+    }
+  }
+</style>
+<table class="footer-class" align="center" border="0" width="100%">
+<tr>
+ <td style="padding:40px 55px 40px 55px">
+ <table align="center" border="0" width="100%">
+  <tr>
+   <td class="tdMobFooter3" valign="bottom" align="top" style="font-size:13px; font-family: Connections, arial; font-weight:Regular; color:#666666;padding-left:0px; padding-right:0px; padding-bottom:8px; padding-top:0px; line-height:18px;float:center; text-align:center; valign:top;">
+   We'll never ask for your personal information such as SSN or ATM PIN in email messages. If you get an email that looks suspicious or you are not the intended recipient of this email, don't click on any links. Instead, forward to <a href="#" aria-label="abuse@bankofamerica.com" style="pointer-events: none; cursor: default;color: #666666; text-decoration: none; ">abuse@bankofamerica.com</a> then delete it.
+   </td>
+  </tr>
+  <tr>
+   <td class="tdMobFooter3" valign="bottom" align="top" style="font-size:13px; line-height:18px; font-family: Connections, arial; font-weight:Regular; color:#666666;padding-left:0px; padding-right:0px; padding-bottom:8px; padding-top:0px; float:center; text-align:center; valign:top;">
+   Please don't reply to this automatically generated service email.
+   </td>
+  </tr>
+  <tr>
+   <td>
+   <table align="center" border="0">
+    <tr>
+     <td class="tdMobFooter3" style="font-family: Connections, arial; font-weight:Regular; text-align:left; font-size:13px; color:#0053C2; padding-bottom:8px; line-height:18px; padding-left:20px; padding-right:10px;">
+     <a href="https://www.bankofamerica.com/privacy/consumer-privacy-notice.go" name="privacy_notice" style="text-decoration:none;color:#0053C2; white-space:nowrap;" aria-label="Privacy Notice">Privacy Notice</a><span style="color:#000000;"></span>
+     </td>
+     <td class="tdMobFooter3" style="font-family: Connections, arial; font-weight:Regular; text-align:left; font-size:13px; color:#0053C2; padding-bottom:8px; line-height:18px; padding-left:10px; padding-right:20px;">
+     <a href="https://www.bankofamerica.com/help/equalhousing.cfm" name="equal_housing_lender" style="text-decoration:none;color:#0053C2; white-space:nowrap;" aria-label="Equal Housing Lender">Equal Housing Lender <img class="imgMobFooter" src="https://www.bankofamerica.com/content/images/ContextualSiteGraphics/alerts/desktop_icon_equalhousing.png" style="border: none !important; width: 22.434px; height: 15.713px; flex-shrink: 0;"></a><br>
+     </td>
+    </tr>
+   </table>
+   </td>
+  </tr>
+  <tr>
+   <td>
+   <table width="300" align="center" border="0">
+    <tr>
+     <td class="tdMobFooter3" valign="bottom" align="top" style="line-height:18px; font-size:13px; font-family: Connections, arial; font-weight:Regular; color:#666666;padding-left:0px; padding-right:0px; padding-bottom:0px; padding-top:0px; float:center; text-align:center; valign:top;">
+     Bank of America, N.A. Member FDIC.
+     </td>
+    </tr>
+   </table>
+   </td> 
+  </tr>
+  <tr>
+   <td>
+   <table width="300" align="center" border="0">
+    <tr>
+     <td class="tdMobFooter3" valign="bottom" align="top" style="line-height:18px; font-size:13px; font-family: Connections, arial; font-weight:Regular; color:#666666;padding-left:0px; padding-right:0px; padding-bottom:0px; padding-top:0px; float:center; text-align:center; valign:top;">
+     &copy; 2026 Bank of America Corporation.
+     </td>
+    </tr>
+   </table>
+   </td>
+  </tr>
+ </table>
+ </td>
+</tr>
+  </table></td></tr></table>  
+  </td></tr>
+</table></td></tr></table> 
+</td></tr></table></td>
+     </tr>
+    </table>
+    </td>
+   </tr>
+  </table>
+  </td>
+ </tr>
+</table>
+<img src="https://click.ealerts.bankofamerica.com/open.aspx?XITEFI7VFCAUHL3YRSTM6YDERA.50124&bmt=0" width="1" height="1" alt="">
+</body>
+</html>
