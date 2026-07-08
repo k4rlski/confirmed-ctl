@@ -17,6 +17,15 @@ WEIGHT_AMOUNT = 0.50   # Exact or near-exact amount is strongest signal
 WEIGHT_VENDOR = 0.30   # Vendor name substring match
 WEIGHT_DATE = 0.20     # Date proximity
 
+# Credit-card service fee: newspapers billed to a card post the invoice amount
+# grossed up by a 3.99% processing fee. A bank txn near expected_amount OR near
+# expected_amount * this multiplier is an equally strong amount match.
+CC_FEE_MULTIPLIER = 1.0399
+
+# Strong-match tolerance around a target amount: within $1 OR within 0.5%.
+AMOUNT_TOLERANCE_ABS = 1.00
+AMOUNT_TOLERANCE_PCT = 0.005
+
 # Known abbreviation map — extend as real BofA vendor strings are observed.
 KNOWN_MAPPINGS = {
     "los angeles times": ["la times", "latimes", "l.a. times"],
@@ -72,7 +81,13 @@ def get_candidate_transactions(
 
 
 def _score_candidate(txn: BankTransaction, ad: CrmAd) -> float:
-    amount_score = _score_amount(float(txn.total_amount), float(ad.expected_amount))
+    # expected_amount can be NULL in the CRM (pricenewsreal). Skip the amount
+    # signal entirely (contribute 0) rather than raising on float(None) — the
+    # candidate can still score on vendor + date proximity.
+    if ad.expected_amount is None:
+        amount_score = 0.0
+    else:
+        amount_score = _score_amount_ccfee(float(txn.total_amount), float(ad.expected_amount))
     vendor_score = _score_vendor(txn.vendor_name, ad.newspaper_name)
     date_score = _score_date(txn.txn_date, ad.expected_charge_date or ad.run_date)
 
@@ -96,6 +111,33 @@ def _score_amount(actual: float, expected: float) -> float:
     elif diff_pct <= 0.15:   # within 15%
         return 0.30
     return 0.0
+
+
+def _score_amount_ccfee(actual: float, expected: float | None) -> float:
+    """CC-fee-aware amount score.
+
+    A bank charge posts either the invoice amount or that amount grossed up by
+    the 3.99% credit-card service fee. The txn amount is matched (by magnitude,
+    so debits stored as negatives still match) against BOTH ``expected`` and
+    ``expected * CC_FEE_MULTIPLIER``; the best target wins. A target hit within
+    $1 or 0.5% counts as a strong match. Anything else falls back to the plain
+    percentage buckets in :func:`_score_amount` against the raw ``expected``.
+
+    ``expected`` may be ``None`` (CRM ``pricenewsreal`` NULL); that yields no
+    amount contribution rather than raising.
+    """
+    if expected is None or expected == 0:
+        return 0.0
+    magnitude = abs(actual)
+    best = 0.0
+    for target in (expected, expected * CC_FEE_MULTIPLIER):
+        diff = abs(magnitude - target)
+        if diff == 0:
+            return 1.0
+        if diff <= AMOUNT_TOLERANCE_ABS or diff / abs(target) <= AMOUNT_TOLERANCE_PCT:
+            best = max(best, 0.95)
+    # Fall back to the plain graduated buckets against the un-feed expected.
+    return max(best, _score_amount(magnitude, expected))
 
 
 def _score_vendor(txn_vendor: str | None, ad_newspaper: str | None) -> float:

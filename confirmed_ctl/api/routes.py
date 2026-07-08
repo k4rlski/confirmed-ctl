@@ -9,31 +9,35 @@ Cross-DB note: ad / case data lives ONLY in the MariaDB CRM
 (``permtrak2_crm.t_e_s_t_p_e_r_m``, read-only) and is referenced here logically
 (``ad_crm_id`` = EspoCRM record id, ``ad_number`` = CRM ``adnumbernews``). There
 is no ``ad_purchases`` Postgres table. The endpoints that need to *read* a CRM ad
-(``/candidates``, ``/unconfirmed``) are stubbed with a 501 until the read-only
-CRM lookup adapter lands in a later generation (see ``_lookup_crm_ad``).
+(``/candidates``, ``/unconfirmed``) use the read-only ``confirmed_ctl.crm.client``
+adapter (see ``_lookup_crm_ad``); when the CRM is unconfigured they return 503.
 """
+import logging
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+from ..crm import client as crm_client
 from ..db.models import AdConfirmation, BankTransaction, CrmAd, SyncLog
 from ..db.session import get_db
 from ..gmail.client import search_threads_by_ad_number
 from ..matching.rag import store_confirmed_match
 from ..matching.scorer import get_candidate_transactions
 
+logger = logging.getLogger(__name__)
+
 confirmed_ctl_bp = Blueprint("confirmed_ctl", __name__, url_prefix="/confirmed-ctl")
 
 
 def _lookup_crm_ad(ad_crm_id: str) -> CrmAd | None:
-    """Read a single CRM ad by its EspoCRM record id.
+    """Read a single CRM ad by its EspoCRM record id via the read-only adapter.
 
-    TODO(phase-later): implement the read-only MariaDB adapter into
-    ``permtrak2_crm.t_e_s_t_p_e_r_m`` (see docs/CRM-SCHEMA.md) and return a
-    populated :class:`CrmAd`. Ad data is NEVER stored in this Postgres DB, so
-    until that adapter lands there is nothing to read and this returns ``None``.
+    Delegates to :func:`confirmed_ctl.crm.client.get_ad`, which reads from the
+    MariaDB CRM (``permtrak2_crm.t_e_s_t_p_e_r_m``). Ad data is NEVER stored in
+    this Postgres DB. Returns ``None`` when the CRM is unconfigured (callers
+    should surface a 503) or when no row matches the id (callers 404).
     """
-    return None
+    return crm_client.get_ad(ad_crm_id)
 
 
 @confirmed_ctl_bp.route("/sync", methods=["POST"])
@@ -85,19 +89,37 @@ def get_candidates(ad_crm_id: str):
 
     ``ad_crm_id`` is the EspoCRM record id of the ad in the MariaDB CRM.
     """
-    ad = _lookup_crm_ad(ad_crm_id)
-    if ad is None:
-        # TODO(phase-later): remove this stub once _lookup_crm_ad reads the live
-        # CRM (t_e_s_t_p_e_r_m). Ad data is not in this Postgres DB.
+    if not crm_client.is_configured():
         return jsonify({
-            "status": "not_implemented",
+            "status": "crm_not_configured",
             "detail": (
-                "CRM ad lookup is not wired yet: the read-only "
-                "permtrak2_crm.t_e_s_t_p_e_r_m adapter lands in a later "
-                "generation. Ad data is never stored in confirmed-ctl Postgres."
+                "CRM not configured: set CRM_DB_HOST (and CRM_DB_USER/PASS/NAME) "
+                "to enable the read-only permtrak2_crm.t_e_s_t_p_e_r_m adapter."
             ),
             "ad_crm_id": ad_crm_id,
-        }), 501
+        }), 503
+
+    try:
+        ad = _lookup_crm_ad(ad_crm_id)
+    except Exception:
+        # A configured-but-unreachable CRM (outage, wrong creds, Remote-MySQL
+        # allowlist not granted) raises pymysql errors here (a subclass of
+        # Exception). Log server-side and return a controlled 502 instead of an
+        # unhandled 500 that would leak a stack trace to the client.
+        logger.exception("CRM lookup failed for ad_crm_id=%s", ad_crm_id)
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+            "ad_crm_id": ad_crm_id,
+        }), 502
+
+    if ad is None:
+        # CRM is configured but no row matches this EspoCRM record id.
+        return jsonify({
+            "status": "not_found",
+            "detail": "No CRM ad found for the given id.",
+            "ad_crm_id": ad_crm_id,
+        }), 404
 
     with get_db() as db:
         # Bank transaction candidates (ranked)
@@ -116,8 +138,10 @@ def get_candidates(ad_crm_id: str):
                 "crm_id": ad.crm_id,
                 "ad_number": ad.ad_number,
                 "newspaper_name": ad.newspaper_name,
-                "expected_amount": float(ad.expected_amount) if ad.expected_amount else None,
-                "run_date": str(ad.run_date),
+                "expected_amount": (
+                    float(ad.expected_amount) if ad.expected_amount is not None else None
+                ),
+                "run_date": str(ad.run_date) if ad.run_date else None,
                 "client_name": ad.client_name,
             },
             "bank_candidates": [
@@ -227,18 +251,56 @@ def list_unconfirmed():
     """
     Returns unconfirmed ads for the report table.
 
-    TODO(phase-later): this must read candidate ads from the MariaDB CRM
-    (``permtrak2_crm.t_e_s_t_p_e_r_m`` — statuses 'Confirmed'/'PaymentConfirmed'
-    with no ``trxstring``; see docs/CRM-SCHEMA.md) and subtract the CRM ids
-    already present in ``ad_confirmations.ad_crm_id``. It previously queried a
-    Postgres ``ad_purchases`` table, which no longer exists (ad data lives only
-    in the CRM). Stubbed with 501 until the read-only CRM lookup adapter lands.
+    Reads candidate ads from the MariaDB CRM via the read-only adapter
+    (``crm.client.list_clearances`` — the verbatim ABCF-X clearances query) and
+    subtracts the CRM ids already present in ``ad_confirmations.ad_crm_id``. Ad
+    data is never stored in confirmed-ctl Postgres — only the logical
+    ``ad_crm_id`` of already-confirmed ads is held here.
     """
+    if not crm_client.is_configured():
+        return jsonify({
+            "status": "crm_not_configured",
+            "detail": (
+                "CRM not configured: set CRM_DB_HOST (and CRM_DB_USER/PASS/NAME) "
+                "to enable the read-only permtrak2_crm.t_e_s_t_p_e_r_m adapter."
+            ),
+        }), 503
+
+    try:
+        clearances = crm_client.list_clearances()
+    except Exception:
+        # Same controlled-failure contract as /candidates: a configured-but-
+        # unreachable CRM raises pymysql errors (subclass of Exception); log and
+        # return 502 rather than an unhandled 500 with a leaked stack trace.
+        logger.exception("CRM list_clearances failed")
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+        }), 502
+
+    with get_db() as db:
+        confirmed_ids = {
+            row[0] for row in db.query(AdConfirmation.ad_crm_id).all()
+        }
+
+    unconfirmed = [ad for ad in clearances if ad.crm_id not in confirmed_ids]
+
     return jsonify({
-        "status": "not_implemented",
-        "detail": (
-            "Listing unconfirmed ads requires the read-only "
-            "permtrak2_crm.t_e_s_t_p_e_r_m adapter, which lands in a later "
-            "generation. Ad data is never stored in confirmed-ctl Postgres."
-        ),
-    }), 501
+        "count": len(unconfirmed),
+        "ads": [
+            {
+                "crm_id": ad.crm_id,
+                "ad_number": ad.ad_number,
+                "client_name": ad.client_name,
+                "newspaper_name": ad.newspaper_name,
+                "run_date": str(ad.run_date) if ad.run_date else None,
+                "expected_charge_date": (
+                    str(ad.expected_charge_date) if ad.expected_charge_date else None
+                ),
+                "expected_amount": (
+                    float(ad.expected_amount) if ad.expected_amount is not None else None
+                ),
+            }
+            for ad in unconfirmed
+        ],
+    })

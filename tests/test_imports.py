@@ -19,6 +19,8 @@ def test_core_modules_import():
         "confirmed_ctl.gmail.receipts",
         "confirmed_ctl.matching.scorer",
         "confirmed_ctl.matching.rag",
+        "confirmed_ctl.crm",
+        "confirmed_ctl.crm.client",
     ]:
         importlib.import_module(mod)
 
