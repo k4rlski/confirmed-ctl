@@ -81,7 +81,13 @@ def get_candidate_transactions(
 
 
 def _score_candidate(txn: BankTransaction, ad: CrmAd) -> float:
-    amount_score = _score_amount_ccfee(float(txn.total_amount), float(ad.expected_amount))
+    # expected_amount can be NULL in the CRM (pricenewsreal). Skip the amount
+    # signal entirely (contribute 0) rather than raising on float(None) — the
+    # candidate can still score on vendor + date proximity.
+    if ad.expected_amount is None:
+        amount_score = 0.0
+    else:
+        amount_score = _score_amount_ccfee(float(txn.total_amount), float(ad.expected_amount))
     vendor_score = _score_vendor(txn.vendor_name, ad.newspaper_name)
     date_score = _score_date(txn.txn_date, ad.expected_charge_date or ad.run_date)
 
@@ -107,7 +113,7 @@ def _score_amount(actual: float, expected: float) -> float:
     return 0.0
 
 
-def _score_amount_ccfee(actual: float, expected: float) -> float:
+def _score_amount_ccfee(actual: float, expected: float | None) -> float:
     """CC-fee-aware amount score.
 
     A bank charge posts either the invoice amount or that amount grossed up by
@@ -116,8 +122,11 @@ def _score_amount_ccfee(actual: float, expected: float) -> float:
     ``expected * CC_FEE_MULTIPLIER``; the best target wins. A target hit within
     $1 or 0.5% counts as a strong match. Anything else falls back to the plain
     percentage buckets in :func:`_score_amount` against the raw ``expected``.
+
+    ``expected`` may be ``None`` (CRM ``pricenewsreal`` NULL); that yields no
+    amount contribution rather than raising.
     """
-    if expected == 0:
+    if expected is None or expected == 0:
         return 0.0
     magnitude = abs(actual)
     best = 0.0

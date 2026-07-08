@@ -20,6 +20,23 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _get_int(name: str, default: int) -> int:
+    """Parse an integer env var robustly.
+
+    Returns ``default`` when the variable is unset, blank, or whitespace-only,
+    and also falls back to ``default`` (rather than raising) when the value is
+    present but not a valid integer. This keeps a blank ``CRM_DB_PORT=`` in a
+    systemd/cron env from crashing startup with a ``ValueError``.
+    """
+    raw = _get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 # Database
 DATABASE_URL = _get("DATABASE_URL")
 
@@ -31,7 +48,7 @@ CRM_DB_HOST = _get("CRM_DB_HOST")
 CRM_DB_USER = _get("CRM_DB_USER")
 CRM_DB_PASS = _get("CRM_DB_PASS")
 CRM_DB_NAME = _get("CRM_DB_NAME")
-CRM_DB_PORT = int(_get("CRM_DB_PORT", "3306"))
+CRM_DB_PORT = _get_int("CRM_DB_PORT", 3306)
 
 # Gmail
 # GMAIL_TOKEN_PATH points at the Google **service-account** JSON key file used for

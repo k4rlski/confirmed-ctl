@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from confirmed_ctl.db.models import BankTransaction, CrmAd
 from confirmed_ctl.matching.scorer import (
     CC_FEE_MULTIPLIER,
@@ -105,6 +107,29 @@ def test_score_candidate_amount_mismatch_lowers_score():
     good = _score_candidate(_txn(425.00, "LA TIMES", d), _ad(425.00, "Los Angeles Times", d))
     bad = _score_candidate(_txn(999.00, "LA TIMES", d), _ad(425.00, "Los Angeles Times", d))
     assert bad < good
+
+
+def test_score_amount_ccfee_none_expected_is_zero():
+    # CRM pricenewsreal can be NULL -> expected is None. Must not raise and must
+    # contribute no amount score.
+    assert _score_amount_ccfee(1368.0, None) == 0.0
+
+
+def test_score_candidate_none_expected_amount_no_amount_contribution():
+    # An ad whose expected_amount is None (CRM pricenewsreal NULL) must score
+    # without raising TypeError and yield no amount contribution — only the
+    # vendor + date signals count.
+    d = date(2026, 6, 17)
+    txn = _txn(1368.0, "LOS ANGELES TIMES ACH", d)
+    ad = CrmAd(
+        expected_amount=None,
+        newspaper_name="Los Angeles Times",
+        expected_charge_date=d,
+        run_date=d,
+    )
+    score = _score_candidate(txn, ad)
+    # vendor(1.0)*0.30 + date(1.0)*0.20 == 0.50, amount contributes 0.
+    assert score == pytest.approx(0.50)
 
 
 def test_get_candidates_returns_empty_when_ad_has_no_dates():

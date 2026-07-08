@@ -99,6 +99,48 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     assert data["gmail_threads"] == [{"id": "t1"}]
 
 
+def test_candidates_502_when_crm_errors(client, monkeypatch):
+    # CRM configured but the adapter raises (outage / bad creds / allowlist not
+    # granted). Must be a controlled 502, NOT an unhandled 500.
+    _configure_crm(monkeypatch)
+
+    def _boom(_id):
+        raise RuntimeError("pymysql: (2003) Can't connect to MySQL server")
+
+    monkeypatch.setattr(routes.crm_client, "get_ad", _boom)
+    resp = client.get("/confirmed-ctl/candidates/REC123")
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["status"] == "crm_unavailable"
+    # No stack trace / raw exception text leaked to the client.
+    assert "pymysql" not in body["detail"]
+    assert "2003" not in body["detail"]
+
+
+def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
+    # expected_amount == 0.0 must serialize as 0.0 (not None); run_date == None
+    # must serialize as None (not the string "None").
+    _configure_crm(monkeypatch)
+    ad = CrmAd(
+        crm_id="REC0",
+        ad_number="AD-0",
+        newspaper_name="Miami Herald",
+        run_date=None,
+        expected_charge_date=date(2026, 6, 17),
+        expected_amount=0.0,
+    )
+    monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
+    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(routes, "search_threads_by_ad_number", lambda n: [])
+    _patch_db(monkeypatch, object())
+
+    resp = client.get("/confirmed-ctl/candidates/REC0")
+    assert resp.status_code == 200
+    ad_json = resp.get_json()["ad"]
+    assert ad_json["expected_amount"] == 0.0
+    assert ad_json["run_date"] is None
+
+
 def test_candidates_survives_gmail_failure(client, monkeypatch):
     _configure_crm(monkeypatch)
     ad = CrmAd(crm_id="REC123", ad_number="IPR1", newspaper_name="Miami Herald",
@@ -126,6 +168,22 @@ def test_unconfirmed_503_when_crm_unconfigured(client, monkeypatch):
     resp = client.get("/confirmed-ctl/unconfirmed")
     assert resp.status_code == 503
     assert resp.get_json()["status"] == "crm_not_configured"
+
+
+def test_unconfirmed_502_when_crm_errors(client, monkeypatch):
+    # CRM configured but list_clearances raises -> controlled 502, not 500.
+    _configure_crm(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("pymysql: (1045) Access denied for user")
+
+    monkeypatch.setattr(routes.crm_client, "list_clearances", _boom)
+    resp = client.get("/confirmed-ctl/unconfirmed")
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["status"] == "crm_unavailable"
+    assert "pymysql" not in body["detail"]
+    assert "1045" not in body["detail"]
 
 
 class _FakeQuery:

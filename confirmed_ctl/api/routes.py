@@ -12,6 +12,7 @@ is no ``ad_purchases`` Postgres table. The endpoints that need to *read* a CRM a
 (``/candidates``, ``/unconfirmed``) use the read-only ``confirmed_ctl.crm.client``
 adapter (see ``_lookup_crm_ad``); when the CRM is unconfigured they return 503.
 """
+import logging
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -22,6 +23,8 @@ from ..db.session import get_db
 from ..gmail.client import search_threads_by_ad_number
 from ..matching.rag import store_confirmed_match
 from ..matching.scorer import get_candidate_transactions
+
+logger = logging.getLogger(__name__)
 
 confirmed_ctl_bp = Blueprint("confirmed_ctl", __name__, url_prefix="/confirmed-ctl")
 
@@ -96,7 +99,20 @@ def get_candidates(ad_crm_id: str):
             "ad_crm_id": ad_crm_id,
         }), 503
 
-    ad = _lookup_crm_ad(ad_crm_id)
+    try:
+        ad = _lookup_crm_ad(ad_crm_id)
+    except Exception:
+        # A configured-but-unreachable CRM (outage, wrong creds, Remote-MySQL
+        # allowlist not granted) raises pymysql errors here (a subclass of
+        # Exception). Log server-side and return a controlled 502 instead of an
+        # unhandled 500 that would leak a stack trace to the client.
+        logger.exception("CRM lookup failed for ad_crm_id=%s", ad_crm_id)
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+            "ad_crm_id": ad_crm_id,
+        }), 502
+
     if ad is None:
         # CRM is configured but no row matches this EspoCRM record id.
         return jsonify({
@@ -122,8 +138,10 @@ def get_candidates(ad_crm_id: str):
                 "crm_id": ad.crm_id,
                 "ad_number": ad.ad_number,
                 "newspaper_name": ad.newspaper_name,
-                "expected_amount": float(ad.expected_amount) if ad.expected_amount else None,
-                "run_date": str(ad.run_date),
+                "expected_amount": (
+                    float(ad.expected_amount) if ad.expected_amount is not None else None
+                ),
+                "run_date": str(ad.run_date) if ad.run_date else None,
                 "client_name": ad.client_name,
             },
             "bank_candidates": [
@@ -248,7 +266,17 @@ def list_unconfirmed():
             ),
         }), 503
 
-    clearances = crm_client.list_clearances()
+    try:
+        clearances = crm_client.list_clearances()
+    except Exception:
+        # Same controlled-failure contract as /candidates: a configured-but-
+        # unreachable CRM raises pymysql errors (subclass of Exception); log and
+        # return 502 rather than an unhandled 500 with a leaked stack trace.
+        logger.exception("CRM list_clearances failed")
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+        }), 502
 
     with get_db() as db:
         confirmed_ids = {
