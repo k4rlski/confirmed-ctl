@@ -69,23 +69,23 @@ def receipts():
 
 
 @cli.command()
-@click.option("--ad-id", required=True, type=int, help="Ad database ID")
-def match(ad_id):
-    """Show ranked bank transaction candidates for a specific ad."""
-    with get_db() as db:
-        from .db.models import AdPurchase
-        from .matching.scorer import get_candidate_transactions
-        ad = db.get(AdPurchase, ad_id)
-        if not ad:
-            click.echo(f"Ad {ad_id} not found.")
-            return
-        candidates = get_candidate_transactions(db, ad)
-        click.echo(f"\nTop candidates for Ad #{ad.ad_number} ({ad.newspaper_name}, "
-                   f"${ad.expected_amount}):\n")
-        for i, c in enumerate(candidates, 1):
-            t = c["transaction"]
-            click.echo(f"  {i}. Score {int(c['score']*100)}% | "
-                       f"{t.txn_date} | ${t.total_amount} | {t.vendor_name}")
+@click.option("--ad-crm-id", required=True, help="CRM ad id (EspoCRM record id)")
+def match(ad_crm_id):
+    """Show ranked bank transaction candidates for a specific CRM ad.
+
+    TODO(phase-later): hydrate the ad from the read-only MariaDB CRM
+    (``permtrak2_crm.t_e_s_t_p_e_r_m``; see docs/CRM-SCHEMA.md) into a
+    ``CrmAd`` and pass it to ``get_candidate_transactions``. Ad data is never
+    stored in confirmed-ctl Postgres, so there is nothing to look up until that
+    read adapter lands; the scoring path is otherwise ready.
+    """
+    click.echo(
+        "ERROR: CRM ad lookup is not implemented yet — the read-only "
+        "permtrak2_crm.t_e_s_t_p_e_r_m adapter lands in a later gen. Ad data is "
+        f"never stored in confirmed-ctl Postgres (requested ad_crm_id: {ad_crm_id}).",
+        err=True,
+    )
+    sys.exit(1)
 
 
 if __name__ == "__main__":

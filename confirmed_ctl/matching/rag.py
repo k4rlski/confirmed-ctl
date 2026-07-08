@@ -28,7 +28,7 @@ def get_collection():
 
 
 def store_confirmed_match(
-    ad_id: int,
+    ad_crm_id: str,
     ad_number: str,
     newspaper_name: str,
     expected_amount: float,
@@ -39,6 +39,9 @@ def store_confirmed_match(
 ):
     """
     Called after a human confirms a match. Embeds the pattern for future retrieval.
+
+    ``ad_crm_id`` is the CRM (EspoCRM) record id of the ad; ad data lives in the
+    MariaDB CRM, so this is a logical reference, not a Postgres row id.
     """
     col = get_collection()
     doc_text = (
@@ -49,9 +52,9 @@ def store_confirmed_match(
     )
     col.add(
         documents=[doc_text],
-        ids=[f"ad_{ad_id}"],
+        ids=[f"ad_{ad_crm_id}"],
         metadatas=[{
-            "ad_id": ad_id,
+            "ad_crm_id": ad_crm_id,
             "ad_number": ad_number,
             "newspaper_name": newspaper_name,
             "txn_vendor": txn_vendor,

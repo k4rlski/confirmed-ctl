@@ -23,7 +23,13 @@ target_metadata = Base.metadata
 
 
 def include_object(obj, name, type_, reflected, compare_to):
-    """Skip tables owned by the CRM / other tools (e.g. ad_purchases)."""
+    """Skip any tables owned by another database/tool.
+
+    ``EXTERNAL_TABLES`` is currently empty: confirmed-ctl owns all of its
+    Postgres tables and references CRM ad data logically (no ``ad_purchases``
+    table). The hook is retained so future cross-tool tables can be excluded
+    from autogenerate without touching this file.
+    """
     if type_ == "table" and name in EXTERNAL_TABLES:
         return False
     return True

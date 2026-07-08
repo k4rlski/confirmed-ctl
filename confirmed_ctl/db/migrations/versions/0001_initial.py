@@ -1,8 +1,15 @@
 """initial confirmed-ctl tables
 
-Creates the tables owned by confirmed-ctl: bank_transactions, ad_confirmations,
-and confirmed_ctl_sync_log. The existing CRM table ``ad_purchases`` is assumed to
-already exist and is referenced by foreign keys only.
+Creates the tables owned by confirmed-ctl in the standalone Postgres:
+bank_transactions, ad_confirmations, and confirmed_ctl_sync_log.
+
+Cross-DB rule (locked data architecture): ad / case data lives ONLY in the
+MariaDB CRM ``permtrak2_crm.t_e_s_t_p_e_r_m`` (read-only) and is NEVER a Postgres
+table here. This migration therefore creates NO ``ad_purchases`` table and
+declares NO foreign key to one. A CRM ad is referenced *logically* via plain,
+indexed columns (``ad_crm_id`` = EspoCRM record id, ``ad_number`` = CRM
+``adnumbernews``). The only foreign key is the genuine same-database
+``ad_confirmations.bank_txn_id -> bank_transactions.id``.
 
 Revision ID: 0001_initial
 Revises:
@@ -39,11 +46,9 @@ def upgrade() -> None:
         sa.Column("account_name", sa.String(length=255)),
         sa.Column("line_descriptions", postgresql.ARRAY(sa.Text())),
         sa.Column("raw_json", postgresql.JSONB()),
-        sa.Column(
-            "confirmed_ad_id",
-            sa.Integer(),
-            sa.ForeignKey("ad_purchases.id", ondelete="SET NULL"),
-        ),
+        # Logical pointer at the confirmed CRM ad (EspoCRM record id). Plain
+        # indexed column, NO foreign key — the ad lives in the MariaDB CRM.
+        sa.Column("confirmed_ad_crm_id", sa.String(length=50)),
         sa.Column("confirmed_at", sa.DateTime(timezone=True)),
         sa.Column("created_in_db", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.UniqueConstraint(
@@ -57,22 +62,25 @@ def upgrade() -> None:
     op.create_index("idx_bank_txn_date", "bank_transactions", [sa.text("txn_date DESC")])
     op.create_index("idx_bank_txn_vendor", "bank_transactions", ["vendor_name"])
     op.create_index("idx_bank_txn_amount", "bank_transactions", ["total_amount"])
-    op.create_index("idx_bank_txn_confirmed", "bank_transactions", ["confirmed_ad_id"])
-    # Partial index for the unmatched-queue candidate query (confirmed_ad_id IS
-    # NULL, filtered/sorted by txn_date). See matching/scorer.py.
+    op.create_index(
+        "idx_bank_txn_confirmed", "bank_transactions", ["confirmed_ad_crm_id"]
+    )
+    # Partial index for the unmatched-queue candidate query (confirmed_ad_crm_id
+    # IS NULL, filtered/sorted by txn_date). See matching/scorer.py.
     op.create_index(
         "idx_bank_txn_unmatched_date",
         "bank_transactions",
         ["txn_date"],
-        postgresql_where=sa.text("confirmed_ad_id IS NULL"),
+        postgresql_where=sa.text("confirmed_ad_crm_id IS NULL"),
     )
 
     op.create_table(
         "ad_confirmations",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column(
-            "ad_id", sa.Integer(), sa.ForeignKey("ad_purchases.id"), nullable=False
-        ),
+        # Logical reference to the CRM ad — plain columns, NO foreign key.
+        sa.Column("ad_crm_id", sa.String(length=50), nullable=False),
+        sa.Column("ad_number", sa.String(length=100)),
+        # Genuine same-database foreign key (kept).
         sa.Column("bank_txn_id", sa.Integer(), sa.ForeignKey("bank_transactions.id")),
         sa.Column("gmail_thread_id", sa.String(length=255)),
         sa.Column("gmail_message_id", sa.String(length=255)),
@@ -84,7 +92,10 @@ def upgrade() -> None:
         sa.Column("match_confidence", sa.String(length=10)),
         sa.Column("match_method", sa.String(length=50)),
         sa.Column("notes", sa.Text()),
-        sa.UniqueConstraint("ad_id", name="uq_ad_confirmations_ad_id"),
+        sa.UniqueConstraint("ad_crm_id", name="uq_ad_confirmations_ad_crm_id"),
+    )
+    op.create_index(
+        "idx_ad_confirmations_ad_number", "ad_confirmations", ["ad_number"]
     )
 
     op.create_table(
@@ -103,6 +114,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("confirmed_ctl_sync_log")
+    op.drop_index("idx_ad_confirmations_ad_number", table_name="ad_confirmations")
     op.drop_table("ad_confirmations")
     op.drop_index("idx_bank_txn_unmatched_date", table_name="bank_transactions")
     op.drop_index("idx_bank_txn_confirmed", table_name="bank_transactions")
