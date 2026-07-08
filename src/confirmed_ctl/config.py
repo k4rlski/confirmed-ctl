@@ -30,6 +30,10 @@ class CrmConfig:
     password: str = ""
     cases_table: str = "t_e_s_t_p_e_r_m"
     news_table: str = "news"
+    # Column holding the human-facing case number used in Dropbox filenames
+    # (e.g. ``10349``). Defaults to ``id`` so behaviour is safe if unset, but it
+    # should point at the CRM's case-number column to match docs/DROPBOX.md.
+    case_number_column: str = "id"
     trigger_statuses: list[str] = field(
         default_factory=lambda: ["Confirmed", "PaymentConfirmed"]
     )

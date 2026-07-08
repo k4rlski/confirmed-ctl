@@ -15,6 +15,7 @@
 ```sql
 SELECT
   p.id,
+  p.number                AS case_number,   -- configurable via crm.case_number_column
   p.name                  AS company,
   p.adnumbernews          AS ad_number,
   p.pricenewsreal         AS invoice_amount,

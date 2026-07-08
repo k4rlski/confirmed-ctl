@@ -2,8 +2,14 @@ from datetime import date
 
 import pytest
 
-from confirmed_ctl.config import Config
-from confirmed_ctl.crm_client import ALLOWED_WRITE_FIELDS, CrmClient, build_trigger_query
+from confirmed_ctl.config import Config, CrmConfig
+from confirmed_ctl.crm_client import (
+    ALLOWED_WRITE_FIELDS,
+    CrmClient,
+    build_trigger_query,
+    row_to_case,
+)
+from confirmed_ctl.dropbox_store import receipt_filename
 from confirmed_ctl.models import CaseOutcome, GmailResult, PlaidResult
 from confirmed_ctl.pipeline import Pipeline
 
@@ -85,6 +91,56 @@ def test_build_trigger_query_params():
     assert "statacctgcreditnews IN (%s, %s)" in sql
     assert "trxstring IS NULL" in sql
     assert params == ["Confirmed", "PaymentConfirmed"]
+
+
+def test_trigger_query_selects_case_number_column():
+    cfg = CrmConfig(case_number_column="number")
+    sql, _ = build_trigger_query(cfg)
+    assert "p.number   AS case_number" in sql
+
+
+def test_trigger_query_rejects_bad_case_number_column():
+    cfg = CrmConfig(case_number_column="number; DROP TABLE p")
+    with pytest.raises(ValueError):
+        build_trigger_query(cfg)
+
+
+def test_row_to_case_uses_case_number_alias():
+    row = {
+        "id": "abc-guid",
+        "case_number": "10349",
+        "company": "Eduexplora International",
+        "ad_number": "IPR00160880",
+        "invoice_amount": 1368.0,
+        "date_invoiced": date(2026, 3, 2),
+        "payment_status": "PaymentConfirmed",
+        "news_id": "n001",
+        "newspaper_name": "Miami Herald",
+        "newspaper_short": "Miami-Herald",
+    }
+    case = row_to_case(row)
+    assert case.case_number == "10349"
+    assert case.id == "abc-guid"
+    assert receipt_filename(case) == (
+        "Case-10349_Eduexplora-International_IPR00160880_2026-03-02.pdf"
+    )
+
+
+def test_row_to_case_falls_back_to_id_without_case_number():
+    row = {
+        "id": "abc-guid",
+        "case_number": None,
+        "company": "Foo",
+        "ad_number": "IPR1",
+        "invoice_amount": 1.0,
+        "date_invoiced": None,
+        "payment_status": "Confirmed",
+        "news_id": "n",
+        "newspaper_name": "Bar",
+        "newspaper_short": "Bar",
+    }
+    case = row_to_case(row)
+    assert case.case_number == "abc-guid"
 
 
 def test_write_rejects_non_allowlisted_fields(sample_case):
