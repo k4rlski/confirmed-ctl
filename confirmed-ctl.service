@@ -1,0 +1,17 @@
+[Unit]
+Description=confirmed-ctl QBO sync daemon
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=auto-ops
+WorkingDirectory=/opt/confirmed-ctl
+EnvironmentFile=/opt/confirmed-ctl/.env
+ExecStart=/opt/confirmed-ctl/venv/bin/python -m confirmed_ctl.daemon
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
