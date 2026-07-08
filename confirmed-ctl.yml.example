@@ -12,6 +12,10 @@ crm:
   # Table + join used by the trigger query.
   cases_table: t_e_s_t_p_e_r_m
   news_table: news
+  # Column holding the human case number used in Dropbox filenames (e.g. 10349).
+  # Leave as `id` to use the CRM internal id; set to the real case-number column
+  # (e.g. `number`) to get Case-10349_... filenames per docs/DROPBOX.md.
+  case_number_column: id
   # Statuses that trigger confirmed-ctl (see docs/OPEN-QUESTIONS.md Q1).
   trigger_statuses:
     - Confirmed

@@ -8,6 +8,7 @@ fields are ever written; no schema changes are made.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -21,6 +22,15 @@ ALLOWED_WRITE_FIELDS = frozenset(
     {"statacctgcreditnews", "urlgmailadconfirm", "trxstring", "datepaidnews"}
 )
 
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _safe_identifier(name: str, kind: str) -> str:
+    """Validate a config-supplied SQL identifier (table/column) before interpolation."""
+    if not _IDENTIFIER.match(name or ""):
+        raise ValueError(f"Invalid {kind} identifier: {name!r}")
+    return name
+
 
 def build_trigger_query(config: CrmConfig) -> tuple[str, list[Any]]:
     """Build the parameterized trigger query and its parameters.
@@ -29,9 +39,11 @@ def build_trigger_query(config: CrmConfig) -> tuple[str, list[Any]]:
     transaction string has been written yet.
     """
     placeholders = ", ".join(["%s"] * len(config.trigger_statuses))
+    case_number_column = _safe_identifier(config.case_number_column, "case_number_column")
     sql = f"""
         SELECT
           p.id,
+          p.{case_number_column}   AS case_number,
           p.name                  AS company,
           p.adnumbernews          AS ad_number,
           p.pricenewsreal         AS invoice_amount,
@@ -54,16 +66,18 @@ def build_trigger_query(config: CrmConfig) -> tuple[str, list[Any]]:
 
 
 def _case_number_from_row(row: dict[str, Any]) -> str:
-    """Derive a human case number. Falls back to the CRM id."""
-    name = str(row.get("company_case") or row.get("name") or "").strip()
-    return name or str(row.get("id", ""))
+    """Derive the human case number, falling back to the CRM id when absent."""
+    number = row.get("case_number")
+    if number is not None and str(number).strip():
+        return str(number).strip()
+    return str(row.get("id", ""))
 
 
 def row_to_case(row: dict[str, Any]) -> Case:
     """Map a CRM result row (dict cursor) to a Case model."""
     return Case(
         id=str(row["id"]),
-        case_number=str(row.get("case_number") or row.get("id")),
+        case_number=_case_number_from_row(row),
         company=str(row.get("company") or ""),
         ad_number=str(row.get("ad_number") or ""),
         invoice_amount=float(row.get("invoice_amount") or 0.0),
