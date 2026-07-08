@@ -15,6 +15,7 @@ imports without them installed (tests never touch live Gmail).
 from __future__ import annotations
 
 import base64
+import re
 import time
 from collections.abc import Iterator
 
@@ -84,16 +85,53 @@ def get_headers(message: dict) -> dict:
 
 
 def get_body_text(message: dict) -> str:
-    """Extract the best-effort text body from a (possibly multipart) message.
+    """Extract a PLAIN-TEXT body from a (possibly multipart) message.
 
-    Prefers ``text/plain``; falls back to ``text/html`` (returned raw) so the
-    parser can still label-match. Recurses through multipart containers.
+    BofA transaction alerts are **HTML-only** (no ``text/plain`` part), so when
+    only ``text/html`` is present it is converted to plain text (tags/entities
+    stripped, block elements turned into line breaks) BEFORE it is returned. This
+    lets the email-scan parser do label-based extraction on the rendered text
+    without caring about HTML structure. ``text/plain`` is still preferred when a
+    message actually provides it. Recurses through multipart containers.
     """
     payload = message.get("payload", {})
     text = _extract_part(payload, "text/plain")
     if text:
         return text
-    return _extract_part(payload, "text/html")
+    html = _extract_part(payload, "text/html")
+    if html:
+        return html_to_text(html)
+    return ""
+
+
+def html_to_text(html: str) -> str:
+    """Convert an HTML fragment to normalized plain text.
+
+    Strips ``<script>``/``<style>``, turns block-level elements into line breaks,
+    removes remaining tags, and unescapes HTML entities. Prefers BeautifulSoup
+    when available; falls back to a dependency-free regex pass otherwise. Blank
+    lines are collapsed and each line is stripped so labels sit at line starts.
+    """
+    if not html:
+        return ""
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        text = soup.get_text("\n")
+    except Exception:  # pragma: no cover - bs4 missing: regex fallback
+        import html as _htmllib
+
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(p|div|tr|td|th|table|h[1-6]|li|ul|ol)>", "\n", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = _htmllib.unescape(text)
+
+    lines = [ln.strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
 
 
 def _decode_body(body: dict) -> str:
