@@ -1,0 +1,29 @@
+# confirmed-ctl HTTP API (gunicorn serving confirmed_ctl.wsgi:app).
+#
+# Binds localhost only (127.0.0.1:8787) by design — the API is never exposed
+# publicly. It is reached from claw/MARS over an SSH tunnel. Authentication is
+# a bearer token (CONFIRMED_CTL_API_TOKEN in the EnvironmentFile); when that is
+# unset the app fails open (dev/test), so the production EnvironmentFile MUST
+# set it.
+[Unit]
+Description=confirmed-ctl HTTP API (gunicorn)
+# The API hits Postgres, so order after network + the DB (mirrors the daemon unit).
+Wants=network.target
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=auto-ops
+WorkingDirectory=/opt/confirmed-ctl
+EnvironmentFile=/opt/confirmed-ctl/.env
+# Bind comes from CONFIRMED_CTL_API_BIND in the EnvironmentFile (systemd expands
+# ${VAR}); defaults to 127.0.0.1:8787 (see .env.example). --access-logfile - sends
+# request logs to the journal.
+ExecStart=/opt/confirmed-ctl/venv/bin/gunicorn -b ${CONFIRMED_CTL_API_BIND} -w 2 --timeout 60 --access-logfile - confirmed_ctl.wsgi:app
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
