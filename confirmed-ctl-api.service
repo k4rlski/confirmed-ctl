@@ -7,14 +7,19 @@
 # set it.
 [Unit]
 Description=confirmed-ctl HTTP API (gunicorn)
-After=network.target
+# The API hits Postgres, so order after network + the DB (mirrors the daemon unit).
+Wants=network.target
+After=network.target postgresql.service
 
 [Service]
 Type=simple
 User=auto-ops
 WorkingDirectory=/opt/confirmed-ctl
 EnvironmentFile=/opt/confirmed-ctl/.env
-ExecStart=/opt/confirmed-ctl/venv/bin/gunicorn -b 127.0.0.1:8787 -w 2 --timeout 60 confirmed_ctl.wsgi:app
+# Bind comes from CONFIRMED_CTL_API_BIND in the EnvironmentFile (systemd expands
+# ${VAR}); defaults to 127.0.0.1:8787 (see .env.example). --access-logfile - sends
+# request logs to the journal.
+ExecStart=/opt/confirmed-ctl/venv/bin/gunicorn -b ${CONFIRMED_CTL_API_BIND} -w 2 --timeout 60 --access-logfile - confirmed_ctl.wsgi:app
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal

@@ -20,6 +20,17 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _get_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean env var (truthy: 1/true/yes/on, case-insensitive).
+
+    Returns ``default`` when unset, blank, or whitespace-only.
+    """
+    raw = _get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _get_int(name: str, default: int) -> int:
     """Parse an integer env var robustly.
 
@@ -82,6 +93,12 @@ SYNC_INTERVAL_SECONDS = int(_get("SYNC_INTERVAL_SECONDS", "3600"))
 # (dev/test/unconfigured) the guard allows all requests through; the fang
 # service MUST set CONFIRMED_CTL_API_TOKEN so production is authenticated.
 API_TOKEN = os.environ.get("CONFIRMED_CTL_API_TOKEN", "")
+
+# Fail-CLOSED switch. When true AND API_TOKEN is empty, the guard REFUSES to
+# serve non-exempt routes (503 auth_required_but_unset) instead of failing open.
+# Default false preserves the fail-open-when-unset dev/test behavior (which then
+# emits a loud warning). /healthz stays exempt in all cases.
+REQUIRE_AUTH = _get_bool("CONFIRMED_CTL_REQUIRE_AUTH", False)
 
 # Address the API binds to. Localhost-only by design: the API is never exposed
 # publicly — claw/MARS reach it through an SSH tunnel. Used for documentation

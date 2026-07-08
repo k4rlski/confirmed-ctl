@@ -27,6 +27,9 @@ live = [
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.120",
     "flask>=3.0",
+    # WSGI server for confirmed_ctl.wsgi:app; provides the `gunicorn` executable
+    # the confirmed-ctl-api.service needs. Pin mirrors requirements.txt.
+    "gunicorn>=21.2",
     "chromadb>=0.5",
 ]
 dev = [
