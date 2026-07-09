@@ -5,17 +5,17 @@ NO live CRM, NO live DB: the pymysql connection and the Postgres session are
 replaced by in-memory fakes that record every statement / call. We assert:
 
 - update_ad_clearance issues EXACTLY ONE UPDATE on t_e_s_t_p_e_r_m touching only
-  the 4 allowlisted columns, param-bound (with ad_crm_id and '["Done"]').
+  the 3 allowlisted columns, param-bound (with ad_crm_id and '["Done"]'); the
+  staff-owned datepaidnews column is NEVER in the SQL.
 - with the gate OFF it raises CrmWriteDisabled and NEVER connects/writes.
 - /confirm (gate ON, write mocked) passes a correctly-formatted trxstring
-  (TAB + signed amount), the /u/1/#search URL, and a YYYY-MM-DD date; and does
-  NOT commit Postgres when the CRM write raises (rollback, no AdConfirmation).
+  (TAB + signed amount) and the /u/1/#search URL; and does NOT commit Postgres
+  when the CRM write raises (rollback, no AdConfirmation).
 - /confirm (gate OFF) reports crm_write: "disabled" and still writes Postgres.
 - the trxstring formatter emits the signed amount ('-$2,000.00' style) + a TAB.
 """
 
 import logging
-import re
 from contextlib import contextmanager
 from datetime import date
 
@@ -189,7 +189,6 @@ def test_update_ad_clearance_single_allowlisted_update(monkeypatch):
         ad_crm_id="6a343d2127bb55b5a",
         trxstring="PURCH W/O PIN LA TIMES MEDIA GR ON 06/26 Debit\t-$2,226.94",
         urlgmailadconfirm="https://mail.google.com/mail/u/1/#search/8021354/FMfcgz",
-        datepaid=date(2026, 6, 26),
     )
 
     # EXACTLY ONE statement, and it is the UPDATE.
@@ -197,14 +196,16 @@ def test_update_ad_clearance_single_allowlisted_update(monkeypatch):
     sql, params = conn.cur.executed[0]
     assert sql.strip().upper().startswith("UPDATE T_E_S_T_P_E_R_M")
 
-    # Only the 4 allowlisted columns are set — and nothing else.
-    for col in ("statclearancenews", "trxstring", "urlgmailadconfirm", "datepaidnews"):
+    # Only the 3 allowlisted columns are set — and nothing else.
+    for col in ("statclearancenews", "trxstring", "urlgmailadconfirm"):
         assert f"{col}=%s" in sql
     set_clause = sql.split("SET", 1)[1].split("WHERE", 1)[0]
-    assert set_clause.count("=%s") == 4  # no 5th column ever
+    assert set_clause.count("=%s") == 3  # no 4th column ever
+    # The staff-owned datepaidnews column is NEVER written.
+    assert "datepaidnews" not in sql
     assert "WHERE id=%s" in sql
-    # 4 SET binds + 1 WHERE bind, all parameterized (never interpolated).
-    assert sql.count("%s") == 5
+    # 3 SET binds + 1 WHERE bind, all parameterized (never interpolated).
+    assert sql.count("%s") == 4
 
     # statclearancenews is the JSON multi-enum literal '["Done"]' (not 'Done').
     assert params[0] == '["Done"]'
@@ -212,8 +213,6 @@ def test_update_ad_clearance_single_allowlisted_update(monkeypatch):
     # ad_crm_id is bound (the WHERE id value), never string-interpolated.
     assert params[-1] == "6a343d2127bb55b5a"
     assert "6a343d2127bb55b5a" not in sql
-    # date formatted YYYY-MM-DD.
-    assert params[3] == "2026-06-26"
 
     assert conn.committed is True
     assert conn.closed is True
@@ -232,19 +231,24 @@ def test_update_ad_clearance_disabled_never_connects(monkeypatch):
             ad_crm_id="REC1",
             trxstring="x\t-$1.00",
             urlgmailadconfirm="",
-            datepaid=date(2026, 6, 26),
         )
 
 
-def test_update_ad_clearance_empty_date_binds_null(monkeypatch):
+def test_update_ad_clearance_sql_omits_datepaidnews(monkeypatch):
+    """The write SQL binds exactly 3 SET columns and never touches datepaidnews."""
     monkeypatch.setattr(crm.settings, "CRM_WRITE_ENABLED", True)
     _configure_crm_db(monkeypatch)
     conn = FakeConn()
     monkeypatch.setattr(crm, "_connect_write", lambda: conn)
 
-    crm.update_ad_clearance("REC1", "memo\t-$1.00", "", datepaid="")
-    _sql, params = conn.cur.executed[0]
-    assert params[3] is None
+    crm.update_ad_clearance("REC1", "memo\t-$1.00", "")
+    sql, params = conn.cur.executed[0]
+    assert "datepaidnews" not in sql
+    set_clause = sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert set_clause.count("=%s") == 3
+    # 3 SET binds + WHERE id bind — no stray date value.
+    assert len(params) == 4
+    assert params[-1] == "REC1"
 
 
 # --------------------------------------------------------------------------- #
@@ -293,12 +297,11 @@ def test_confirm_enabled_calls_update_with_verified_formats(client, monkeypatch)
 
     calls = {}
 
-    def _fake_write(ad_crm_id, trxstring, urlgmailadconfirm, datepaid):
+    def _fake_write(ad_crm_id, trxstring, urlgmailadconfirm):
         calls.update(
             ad_crm_id=ad_crm_id,
             trxstring=trxstring,
             urlgmailadconfirm=urlgmailadconfirm,
-            datepaid=datepaid,
         )
 
     monkeypatch.setattr(routes.crm_client, "update_ad_clearance", _fake_write)
@@ -315,9 +318,10 @@ def test_confirm_enabled_calls_update_with_verified_formats(client, monkeypatch)
     assert calls["urlgmailadconfirm"] == (
         "https://mail.google.com/mail/u/1/#search/8021354/FMfcgzThreadId"
     )
-    # datepaid: YYYY-MM-DD.
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", calls["datepaid"])
-    assert calls["datepaid"] == "2026-06-26"
+    # datepaidnews is a staff-owned field — /confirm must not pass it and must
+    # not report it in crm_values.
+    assert "datepaid" not in calls
+    assert "datepaidnews" not in data["crm_values"]
     assert calls["ad_crm_id"] == "6a343d2127bb55b5a"
 
     # Postgres committed after a successful CRM write.
@@ -387,7 +391,6 @@ def test_update_ad_clearance_rowcount_zero_raises_crm_write_error(monkeypatch):
             ad_crm_id="does-not-exist",
             trxstring="memo\t-$1.00",
             urlgmailadconfirm="",
-            datepaid=date(2026, 6, 26),
         )
     # The UPDATE was issued and committed; only the rowcount check failed it.
     assert len(conn.cur.executed) == 1
@@ -433,7 +436,6 @@ def test_update_ad_clearance_rejects_empty_ad_crm_id(monkeypatch):
                 ad_crm_id=bad,
                 trxstring="memo\t-$1.00",
                 urlgmailadconfirm="",
-                datepaid=date(2026, 6, 26),
             )
 
 

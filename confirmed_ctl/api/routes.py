@@ -13,7 +13,7 @@ is no ``ad_purchases`` Postgres table. The endpoints that need to *read* a CRM a
 adapter (see ``_lookup_crm_ad``); when the CRM is unconfigured they return 503.
 """
 import logging
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
@@ -269,19 +269,14 @@ def confirm_ad():
         if existing:
             return jsonify({"error": "Ad already confirmed", "confirmation_id": existing.id}), 409
 
-        # --- CRM write-back (verified 4-field allowlist, gated) ---------------
+        # --- CRM write-back (verified 3-field allowlist, gated) ---------------
         # Assemble the exact write values from the matched bank transaction /
         # request, then (only when the gate is on and there is a matched txn)
         # write them to the CRM BEFORE committing the Postgres confirmation, so a
         # CRM failure leaves nothing persisted and the confirm is cleanly
-        # retryable.
+        # retryable. The staff-owned datepaidnews column is never written here.
         trxstring = _build_trxstring(txn) if txn else ""
         gmail_url = _build_gmail_url(ad_number, thread_id)
-        datepaid = (
-            txn.txn_date.strftime("%Y-%m-%d")
-            if txn and isinstance(txn.txn_date, date)
-            else ""
-        )
 
         if settings.CRM_WRITE_ENABLED:
             if txn and ad_crm_id:
@@ -296,7 +291,6 @@ def confirm_ad():
                         ad_crm_id=ad_crm_id,
                         trxstring=trxstring,
                         urlgmailadconfirm=gmail_url,
-                        datepaid=datepaid,
                     )
                     crm_write = "written"
                 except crm_client.CrmWriteDisabled:
@@ -372,12 +366,10 @@ def confirm_ad():
                 logger.critical(
                     "CRM written (statclearancenews=Done) but Postgres commit "
                     "FAILED — reconcile ad_crm_id=%s (retry is idempotent/"
-                    "self-healing) trxstring=%r urlgmailadconfirm=%r "
-                    "datepaidnews=%r",
+                    "self-healing) trxstring=%r urlgmailadconfirm=%r",
                     ad_crm_id,
                     trxstring,
                     gmail_url,
-                    datepaid,
                 )
                 return jsonify({
                     "status": "postgres_commit_failed_after_crm_write",
@@ -423,7 +415,6 @@ def confirm_ad():
                 "statclearancenews": "Done",
                 "trxstring": trxstring,
                 "urlgmailadconfirm": gmail_url,
-                "datepaidnews": datepaid,
             },
         })
 

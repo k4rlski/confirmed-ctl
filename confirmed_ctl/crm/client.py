@@ -16,18 +16,17 @@ by accident:
 1. **Feature gate** — it refuses (raises :class:`CrmWriteDisabled`) unless
    ``settings.CRM_WRITE_ENABLED`` is true (env ``CONFIRMED_CTL_CRM_WRITE``,
    default false; set true ONLY on fang).
-2. **Strict 4-field allowlist** — it issues a SINGLE parameterized UPDATE whose
+2. **Strict 3-field allowlist** — it issues a SINGLE parameterized UPDATE whose
    column list is HARDCODED to exactly ``statclearancenews`` (bound to the
-   literal ``'["Done"]'``), ``trxstring``, ``urlgmailadconfirm`` and
-   ``datepaidnews``, keyed by ``WHERE id=%s``. There is no dynamic /
-   caller-supplied column name, ever, and every value is bound via ``%s`` (never
-   string-interpolated).
+   literal ``'["Done"]'``), ``trxstring`` and ``urlgmailadconfirm``, keyed by
+   ``WHERE id=%s``. There is no dynamic / caller-supplied column name, ever, and
+   every value is bound via ``%s`` (never string-interpolated). The
+   staff-owned ``datepaidnews`` column is intentionally NOT written.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import date
 
 from .. import settings
 from ..db.models import CrmAd
@@ -227,12 +226,13 @@ def get_ad(ad_crm_id: str) -> CrmAd | None:
 # NOT the plain 'Done'.
 CLEARANCE_DONE = json.dumps(["Done"])  # '["Done"]'
 
-# HARDCODED, strict 4-field allowlist. The column list is fixed here and never
+# HARDCODED, strict 3-field allowlist. The column list is fixed here and never
 # derived from caller input; only the VALUES are bound (``%s``). Order of bound
-# params: statclearancenews, trxstring, urlgmailadconfirm, datepaidnews, id.
+# params: statclearancenews, trxstring, urlgmailadconfirm, id. The staff-owned
+# ``datepaidnews`` column is intentionally NOT part of this write.
 UPDATE_AD_CLEARANCE_SQL = (
     "UPDATE t_e_s_t_p_e_r_m "
-    "SET statclearancenews=%s, trxstring=%s, urlgmailadconfirm=%s, datepaidnews=%s "
+    "SET statclearancenews=%s, trxstring=%s, urlgmailadconfirm=%s "
     "WHERE id=%s"
 )
 
@@ -241,15 +241,15 @@ def update_ad_clearance(
     ad_crm_id: str,
     trxstring: str,
     urlgmailadconfirm: str,
-    datepaid: date | str | None,
 ) -> None:
     """Write the clearance-done marker + audit fields back to ONE CRM ad.
 
     Issues a SINGLE parameterized UPDATE against ``t_e_s_t_p_e_r_m`` setting the
-    strict 4-field allowlist (``statclearancenews='["Done"]'``, ``trxstring``,
-    ``urlgmailadconfirm``, ``datepaidnews``) ``WHERE id=%s``, then commits. Every
-    value is bound via ``%s``; no value is ever string-interpolated and no column
-    name is caller-supplied.
+    strict 3-field allowlist (``statclearancenews='["Done"]'``, ``trxstring``,
+    ``urlgmailadconfirm``) ``WHERE id=%s``, then commits. Every value is bound via
+    ``%s``; no value is ever string-interpolated and no column name is
+    caller-supplied. The staff-owned ``datepaidnews`` column is intentionally NOT
+    written.
 
     GATED: if ``settings.CRM_WRITE_ENABLED`` is false this raises
     :class:`CrmWriteDisabled` BEFORE opening any connection, so dev/test never
@@ -265,9 +265,6 @@ def update_ad_clearance(
     WITHOUT reporting success, so the caller does not persist a confirmation for a
     write that never landed. rowcount>=1 (a match, even with unchanged values) is
     success.
-
-    ``datepaid`` may be a :class:`datetime.date` (formatted ``YYYY-MM-DD``) or an
-    already-formatted string (passed through); ``None`` binds SQL ``NULL``.
     """
     if not settings.CRM_WRITE_ENABLED:
         raise CrmWriteDisabled(
@@ -281,13 +278,6 @@ def update_ad_clearance(
             "issue an UPDATE without a target CRM record id."
         )
 
-    if isinstance(datepaid, date):
-        datepaid_value: str | None = datepaid.strftime("%Y-%m-%d")
-    elif datepaid is None or datepaid == "":
-        datepaid_value = None
-    else:
-        datepaid_value = str(datepaid)
-
     conn = _connect_write()
     try:
         with conn.cursor() as cur:
@@ -297,7 +287,6 @@ def update_ad_clearance(
                     CLEARANCE_DONE,
                     trxstring,
                     urlgmailadconfirm,
-                    datepaid_value,
                     ad_crm_id,
                 ),
             )

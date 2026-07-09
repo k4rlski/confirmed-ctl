@@ -65,9 +65,9 @@ CRM_DB_PORT = _get_int("CRM_DB_PORT", 3306)
 # write to the live CRM). When true, /confirm issues ONE strictly-allowlisted
 # UPDATE to the matched ``t_e_s_t_p_e_r_m`` record via
 # ``confirmed_ctl.crm.client.update_ad_clearance`` (columns statclearancenews,
-# trxstring, urlgmailadconfirm, datepaidnews — nothing else). Set
-# ``CONFIRMED_CTL_CRM_WRITE=true`` ONLY on the fang service, where the
-# ``permtrak2_crm`` user is granted from fang's IP.
+# trxstring, urlgmailadconfirm — nothing else; the staff-owned datepaidnews is
+# never written). Set ``CONFIRMED_CTL_CRM_WRITE=true`` ONLY on the fang service,
+# where the ``permtrak2_crm`` user is granted from fang's IP.
 CRM_WRITE_ENABLED = _get_bool("CONFIRMED_CTL_CRM_WRITE", False)
 
 # Gmail
