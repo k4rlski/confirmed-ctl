@@ -251,6 +251,13 @@ def get_candidates(ad_crm_id: str):
                 "state": str(ad.state) if ad.state is not None else None,
                 "attorney": str(ad.attorney) if ad.attorney is not None else None,
                 "entity": str(ad.entity) if ad.entity is not None else None,
+                # Additional ABCF-X reconcile columns. run_end is a date; the
+                # others are None-safe strings (status_news is the raw statnews
+                # enum string passed through as-is).
+                "job_title": str(ad.job_title) if ad.job_title is not None else None,
+                "run_end": str(ad.run_end) if ad.run_end else None,
+                "status_news": str(ad.status_news) if ad.status_news is not None else None,
+                "owner": str(ad.owner) if ad.owner is not None else None,
             },
             "bank_candidates": [
                 {
@@ -513,6 +520,13 @@ def list_unconfirmed():
                 "state": str(ad.state) if ad.state is not None else None,
                 "attorney": str(ad.attorney) if ad.attorney is not None else None,
                 "entity": str(ad.entity) if ad.entity is not None else None,
+                # Additional ABCF-X reconcile columns. run_end is a date; the
+                # others are None-safe strings (status_news is the raw statnews
+                # enum string passed through as-is).
+                "job_title": str(ad.job_title) if ad.job_title is not None else None,
+                "run_end": str(ad.run_end) if ad.run_end else None,
+                "status_news": str(ad.status_news) if ad.status_news is not None else None,
+                "owner": str(ad.owner) if ad.owner is not None else None,
             }
             for ad in unconfirmed
         ],

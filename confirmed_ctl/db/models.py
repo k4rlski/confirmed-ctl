@@ -80,6 +80,14 @@ class CrmAd:
     state: str | None = None
     attorney: str | None = None
     entity: str | None = None
+    # Additional ABCF-X reconcile columns. ``run_end`` is the ad's news end date
+    # (``datenewsend``); ``run_date`` above is the start (``datenewsstart``).
+    # ``status_news`` is the raw EspoCRM ``statnews`` enum string (e.g.
+    # ``'["Active"]'``) passed through as-is. ``owner`` is ``news.owner``.
+    job_title: str | None = None
+    run_end: date | None = None
+    status_news: str | None = None
+    owner: str | None = None
 
 
 class BankTransaction(Base):

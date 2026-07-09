@@ -70,7 +70,7 @@ _SELECT_FROM = """SELECT news.owner AS owner, t_e_s_t_p_e_r_m.id, t_e_s_t_p_e_r_
        t_e_s_t_p_e_r_m.statacctgcreditnews, t_e_s_t_p_e_r_m.dboxemailthreadcase,
        t_e_s_t_p_e_r_m.adnumbernews, news.name AS newspapers_name, news.rank,
        t_e_s_t_p_e_r_m.pricenewsreal, t_e_s_t_p_e_r_m.casenumber,
-       t_e_s_t_p_e_r_m.jobsitestate
+       t_e_s_t_p_e_r_m.jobsitestate, t_e_s_t_p_e_r_m.datenewsend
 FROM t_e_s_t_p_e_r_m
 JOIN news ON t_e_s_t_p_e_r_m.news_id = news.id"""
 
@@ -186,6 +186,12 @@ def _row_to_crm_ad(row: dict) -> CrmAd:
         state=row.get("jobsitestate"),
         attorney=row.get("attyname"),
         entity=row.get("entity"),
+        job_title=row.get("jobtitle"),
+        run_end=row.get("datenewsend"),
+        # statnews is a raw EspoCRM enum string (e.g. '["Active"]') — pass
+        # through as-is; do NOT parse it here.
+        status_news=row.get("statnews"),
+        owner=row.get("owner"),
     )
 
 

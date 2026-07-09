@@ -81,6 +81,10 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
         state="CA",
         attorney="Jane Atty",
         entity="JKT",
+        job_title="Analyst",
+        run_end=date(2026, 6, 20),
+        status_news='["Active"]',
+        owner="karl",
     )
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(
@@ -122,6 +126,11 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     assert data["ad"]["state"] == "CA"
     assert data["ad"]["attorney"] == "Jane Atty"
     assert data["ad"]["entity"] == "JKT"
+    # Additional ABCF-X reconcile columns exposed on the candidates ad.
+    assert data["ad"]["job_title"] == "Analyst"
+    assert data["ad"]["run_end"] == "2026-06-20"
+    assert data["ad"]["status_news"] == '["Active"]'
+    assert data["ad"]["owner"] == "karl"
     assert len(data["bank_candidates"]) == 1
     cand = data["bank_candidates"][0]
     assert cand["txn_id"] == 1
@@ -187,6 +196,11 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     assert ad_json["state"] is None
     assert ad_json["attorney"] is None
     assert ad_json["entity"] is None
+    # Additional ABCF-X columns also serialize as null when unset.
+    assert ad_json["job_title"] is None
+    assert ad_json["run_end"] is None
+    assert ad_json["status_news"] is None
+    assert ad_json["owner"] is None
 
 
 def test_candidates_surfaces_gmail_error_on_failure(client, monkeypatch):
@@ -292,7 +306,8 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
         CrmAd(crm_id="B", ad_number="AD-B", newspaper_name="Sun Sentinel",
               run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
               expected_amount=200.0, case_number="B-2026-0007", state="NY",
-              attorney="John Atty", entity="PA"),
+              attorney="John Atty", entity="PA", job_title="Engineer",
+              run_end=date(2026, 6, 10), status_news='["Active"]', owner="karl"),
     ]
     monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
     # "A" is already confirmed in Postgres -> only "B" should remain.
@@ -310,6 +325,11 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
     assert ad_b["state"] == "NY"
     assert ad_b["attorney"] == "John Atty"
     assert ad_b["entity"] == "PA"
+    # Additional ABCF-X reconcile columns exposed on the unconfirmed ads.
+    assert ad_b["job_title"] == "Engineer"
+    assert ad_b["run_end"] == "2026-06-10"
+    assert ad_b["status_news"] == '["Active"]'
+    assert ad_b["owner"] == "karl"
 
 
 def test_unconfirmed_all_when_none_confirmed(client, monkeypatch):

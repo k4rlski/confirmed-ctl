@@ -56,6 +56,7 @@ def _sample_row(**overrides):
         "adsapproveddate": date(2026, 6, 1),
         "datebuynews": date(2026, 6, 17),
         "datenewsstart": date(2026, 6, 15),
+        "datenewsend": date(2026, 6, 20),
         "name": "Eduexplora International",
         "jobtitle": "Analyst",
         "attyname": "Jane Atty",
@@ -141,6 +142,12 @@ def test_list_clearances_query_verbatim_and_mapping(monkeypatch, configured):
     assert ad.state == "CA"
     assert ad.attorney == "Jane Atty"
     assert ad.entity == "JKT"
+    # Additional ABCF-X reconcile columns.
+    assert ad.job_title == "Analyst"
+    assert ad.run_end == date(2026, 6, 20)
+    # status_news is the raw EspoCRM enum string, passed through as-is.
+    assert ad.status_news == '["Active"]'
+    assert ad.owner == "karl"
     assert conn.closed is True
 
 
@@ -151,6 +158,12 @@ def test_select_from_includes_new_columns():
     assert "t_e_s_t_p_e_r_m.jobsitestate" in crm._SELECT_FROM
     assert "t_e_s_t_p_e_r_m.attyname" in crm._SELECT_FROM
     assert "t_e_s_t_p_e_r_m.entity" in crm._SELECT_FROM
+    # datenewsend is the newly added column (jobtitle, statnews, news.owner were
+    # already selected) feeding run_end.
+    assert "t_e_s_t_p_e_r_m.datenewsend" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.jobtitle" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.statnews" in crm._SELECT_FROM
+    assert "news.owner AS owner" in crm._SELECT_FROM
 
 
 def test_row_to_crm_ad_maps_richer_fields_and_strips_ad_number(monkeypatch, configured):
@@ -164,6 +177,10 @@ def test_row_to_crm_ad_maps_richer_fields_and_strips_ad_number(monkeypatch, conf
     assert ad.state == "CA"
     assert ad.attorney == "Jane Atty"
     assert ad.entity == "JKT"
+    assert ad.job_title == "Analyst"
+    assert ad.run_end == date(2026, 6, 20)
+    assert ad.status_news == '["Active"]'
+    assert ad.owner == "karl"
 
 
 def test_row_to_crm_ad_ad_number_none_safe(monkeypatch, configured):
