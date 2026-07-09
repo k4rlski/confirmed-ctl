@@ -166,9 +166,16 @@ def test_build_trxstring_has_tab_and_signed_amount():
     assert memo == "PURCH W/O PIN LA TIMES MEDIA GR ON 06/26 Debit"
 
 
-def test_build_gmail_url_strips_ad_number():
+def test_build_gmail_url_uses_authuser_all_form(monkeypatch):
+    # Account-index-agnostic: ?authuser=<impersonated>#all/<thread_id>.
+    monkeypatch.setattr(routes.settings, "GMAIL_IMPERSONATE", "karl@perm-ads.com")
     url = routes._build_gmail_url("8021354  ", "FMfcgzThreadId")
-    assert url == "https://mail.google.com/mail/u/1/#search/8021354/FMfcgzThreadId"
+    assert url == (
+        "https://mail.google.com/mail/?authuser=karl@perm-ads.com#all/FMfcgzThreadId"
+    )
+    # No stale /u/1/#search form.
+    assert "/u/1/" not in url
+    assert "#search/" not in url
 
 
 def test_build_gmail_url_empty_without_thread():
@@ -305,6 +312,7 @@ def test_confirm_enabled_calls_update_with_verified_formats(client, monkeypatch)
         )
 
     monkeypatch.setattr(routes.crm_client, "update_ad_clearance", _fake_write)
+    monkeypatch.setattr(routes.settings, "GMAIL_IMPERSONATE", "karl@perm-ads.com")
 
     resp = client.post("/confirmed-ctl/confirm", json=_confirm_body())
     assert resp.status_code == 200
@@ -314,9 +322,9 @@ def test_confirm_enabled_calls_update_with_verified_formats(client, monkeypatch)
     # trxstring: TAB present + signed amount.
     assert "\t" in calls["trxstring"]
     assert calls["trxstring"].endswith("\t-$2,226.94")
-    # urlgmailadconfirm: /u/1/#search deep link with stripped ad number.
+    # urlgmailadconfirm: account-index-agnostic authuser #all deep link.
     assert calls["urlgmailadconfirm"] == (
-        "https://mail.google.com/mail/u/1/#search/8021354/FMfcgzThreadId"
+        "https://mail.google.com/mail/?authuser=karl@perm-ads.com#all/FMfcgzThreadId"
     )
     # datepaidnews is a staff-owned field — /confirm must not pass it and must
     # not report it in crm_values.

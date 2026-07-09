@@ -87,7 +87,29 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
         routes, "get_candidate_transactions",
         lambda db, ad: [{"transaction": _fake_txn(), "score": 0.91}],
     )
-    monkeypatch.setattr(routes, "search_threads_by_ad_number", lambda n: [{"id": "t1"}])
+    thread = {
+        "thread_id": "t1",
+        "subject": "Ad IPR00160880 receipt",
+        "from": "billing@miamiherald.com",
+        "date": "Tue, 16 Jun 2026 10:00:00 -0400",
+        "snippet": "Your ad IPR00160880 ran",
+        "message_count": 2,
+        "gmail_url": (
+            "https://mail.google.com/mail/?authuser=karl@perm-ads.com#all/t1"
+        ),
+        "matched_by": "ad_number",
+    }
+    captured = {}
+
+    def _fake_search(ad_number, newspaper_name=None, charge_date=None, max_results=8):
+        captured.update(
+            ad_number=ad_number,
+            newspaper_name=newspaper_name,
+            charge_date=charge_date,
+        )
+        return [thread]
+
+    monkeypatch.setattr(routes, "search_threads_by_ad_number", _fake_search)
     _patch_db(monkeypatch, object())
 
     resp = client.get("/confirmed-ctl/candidates/REC123")
@@ -105,7 +127,17 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     assert cand["txn_id"] == 1
     assert cand["amount"] == 1368.0
     assert cand["score"] == 0.91
-    assert data["gmail_threads"] == [{"id": "t1"}]
+    # Newspaper name + expected charge date are forwarded into the search.
+    assert captured["newspaper_name"] == "Miami Herald"
+    assert captured["charge_date"] == date(2026, 6, 17)
+    # Each surfaced thread carries gmail_url + matched_by out to the JSON.
+    assert data["gmail_threads"] == [thread]
+    assert data["gmail_threads"][0]["gmail_url"].startswith(
+        "https://mail.google.com/mail/?authuser="
+    )
+    assert data["gmail_threads"][0]["matched_by"] == "ad_number"
+    assert data["gmail_error"] is None
+    assert data["gmail_note"] is None
 
 
 def test_candidates_502_when_crm_errors(client, monkeypatch):
@@ -140,7 +172,9 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     )
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
-    monkeypatch.setattr(routes, "search_threads_by_ad_number", lambda n: [])
+    monkeypatch.setattr(
+        routes, "search_threads_by_ad_number", lambda *a, **k: []
+    )
     _patch_db(monkeypatch, object())
 
     resp = client.get("/confirmed-ctl/candidates/REC0")
@@ -155,7 +189,9 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     assert ad_json["entity"] is None
 
 
-def test_candidates_survives_gmail_failure(client, monkeypatch):
+def test_candidates_surfaces_gmail_error_on_failure(client, monkeypatch):
+    # A real Gmail search failure must NOT be silently swallowed: the popup
+    # still returns 200, but gmail_error is surfaced (not pretend-empty).
     _configure_crm(monkeypatch)
     ad = CrmAd(crm_id="REC123", ad_number="IPR1", newspaper_name="Miami Herald",
                run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
@@ -163,7 +199,7 @@ def test_candidates_survives_gmail_failure(client, monkeypatch):
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
 
-    def _boom(_n):
+    def _boom(*a, **k):
         raise RuntimeError("gmail down")
 
     monkeypatch.setattr(routes, "search_threads_by_ad_number", _boom)
@@ -171,7 +207,36 @@ def test_candidates_survives_gmail_failure(client, monkeypatch):
 
     resp = client.get("/confirmed-ctl/candidates/REC123")
     assert resp.status_code == 200
-    assert resp.get_json()["gmail_threads"] == []
+    data = resp.get_json()
+    assert data["gmail_threads"] == []
+    assert isinstance(data["gmail_error"], str) and data["gmail_error"]
+    assert data["gmail_note"] is None
+    # No raw exception text leaked to the client.
+    assert "gmail down" not in data["gmail_error"]
+
+
+def test_candidates_blank_ad_number_sets_note_without_search(client, monkeypatch):
+    # Blank/whitespace ad number => gmail_note, gmail_threads=[], and the Gmail
+    # client is NEVER called (guarded before search).
+    _configure_crm(monkeypatch)
+    ad = CrmAd(crm_id="REC123", ad_number="   ", newspaper_name="Miami Herald",
+               run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
+               expected_amount=100.0)
+    monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
+    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+
+    def _must_not_search(*a, **k):  # pragma: no cover
+        raise AssertionError("search must not run for a blank ad number")
+
+    monkeypatch.setattr(routes, "search_threads_by_ad_number", _must_not_search)
+    _patch_db(monkeypatch, object())
+
+    resp = client.get("/confirmed-ctl/candidates/REC123")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["gmail_threads"] == []
+    assert data["gmail_note"] == "No ad number on record"
+    assert data["gmail_error"] is None
 
 
 # --------------------------------------------------------------------------- #
