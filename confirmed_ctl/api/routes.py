@@ -12,6 +12,7 @@ is no ``ad_purchases`` Postgres table. The endpoints that need to *read* a CRM a
 (``/candidates``, ``/unconfirmed``) use the read-only ``confirmed_ctl.crm.client``
 adapter (see ``_lookup_crm_ad``); when the CRM is unconfigured they return 503.
 """
+import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -79,6 +80,26 @@ def _lookup_crm_ad(ad_crm_id: str) -> CrmAd | None:
     should surface a 503) or when no row matches the id (callers 404).
     """
     return crm_client.get_ad(ad_crm_id)
+
+
+def _coerce_raw_json(raw) -> dict:
+    """Return a ``bank_transactions.raw_json`` value as a plain dict.
+
+    The column is JSONB (already a ``dict`` when read via SQLAlchemy) but an
+    ingestion adapter or a manual row may have stored it as a JSON *string*.
+    Handle both: parse a ``str`` (returning ``{}`` if it is not a JSON object)
+    and pass a ``dict`` through unchanged. Anything else (``None``/list/number)
+    yields ``{}`` so callers can always ``.get()`` safely.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -242,7 +263,17 @@ def get_candidates(ad_crm_id: str):
         }), 404
 
     with get_db() as db:
-        # Bank transaction candidates (ranked)
+        # Bank transaction candidates (ranked).
+        #
+        # CONSUMED-EXCLUSION INVARIANT: get_candidate_transactions() only returns
+        # UNCONSUMED, non-ignored rows — its query filters
+        # ``confirmed_ad_crm_id IS NULL`` AND ``ignored IS FALSE`` (see
+        # confirmed_ctl/matching/scorer.py, the two .filter() lines
+        # ``BankTransaction.confirmed_ad_crm_id.is_(None)`` and
+        # ``BankTransaction.ignored.is_(False)``). So once a bank txn is mapped to
+        # an ad (confirmed_ad_crm_id set at /confirm) or flagged as SAAS/vendor
+        # noise, it can NEVER reappear as a candidate for another ad's
+        # reconciliation. Do not relax this filter.
         candidates = get_candidate_transactions(db, ad)
 
         # Near-miss bank txns EXCLUDED from the candidate set (bounded <=10):
@@ -675,6 +706,10 @@ def list_reconciled():
             txn = txn_by_id.get(conf.bank_txn_id) if conf.bank_txn_id else None
             item = _crm_ad_to_dict(ad)
             item.update({
+                # Joined bank transaction id so the frontend can deep-link the
+                # read-only Bank-Trx modal (GET /bank-transaction/<id>). None-safe
+                # when this reconciled ad has no mapped bank txn.
+                "bank_txn_id": txn.id if txn is not None else None,
                 "bank_amount": (
                     float(txn.total_amount)
                     if txn is not None and txn.total_amount is not None
@@ -696,3 +731,100 @@ def list_reconciled():
     ads_out.sort(key=lambda d: d.get("confirmed_at") or "", reverse=True)
 
     return jsonify({"count": len(ads_out), "ads": ads_out})
+
+
+@confirmed_ctl_bp.route("/bank-transaction/<txn_id>", methods=["GET"])
+def get_bank_transaction(txn_id: str):
+    """Read-only detail for a single bank transaction (Bank-Trx modal).
+
+    Looks up ``bank_transactions`` by primary key (``id``) and returns the
+    human-facing fields the confirmed-ctl-adm Bank-Trx modal renders. This is
+    ADDITIVE and READ-ONLY — it never mutates state and never touches the CRM
+    write path.
+
+    Field notes:
+
+    - ``amount`` is the raw signed ``total_amount`` (debits are stored NEGATIVE);
+      it is returned as-is so the UI can format the sign/currency.
+    - ``merchant_raw`` / ``merchant`` (the "vendor trx string", i.e. the raw bank
+      memo) live in the row's ``raw_json`` blob, NOT as top-level columns, and so
+      does ``posted_date``. ``raw_json`` may be a dict (JSONB) or a JSON string —
+      both are handled via :func:`_coerce_raw_json`.
+    - ``line_descriptions`` prefers ``raw_json['line_descriptions']`` and falls
+      back to the ``line_descriptions`` ARRAY column.
+    - Dates serialize None-safely (``str()`` for dates, ``isoformat()`` for
+      timestamps, else ``None``).
+
+    Related CRM summary: when ``confirmed_ad_crm_id`` is set the endpoint calls
+    the existing read-only CRM reader (:func:`_lookup_crm_ad` -> ``get_ad``) and
+    includes ``related: {crm_id, case_number, client_name, ad_number,
+    newspaper_name}``. When the txn is unconsumed ``related`` is ``null``. If the
+    OPTIONAL CRM lookup raises (CRM unreachable/misconfigured) the txn detail is
+    STILL returned with ``related=null`` plus ``related_error:"crm_unavailable"``
+    — the modal must always render, so a CRM outage never 502s this endpoint.
+
+    Returns 404 ``{error:"not_found"}`` for an unknown ``txn_id``.
+    """
+    with get_db() as db:
+        txn = db.get(BankTransaction, txn_id)
+        if txn is None:
+            return jsonify({"error": "not_found"}), 404
+
+        raw = _coerce_raw_json(txn.raw_json)
+        line_descriptions = raw.get("line_descriptions")
+        if line_descriptions is None:
+            line_descriptions = txn.line_descriptions
+
+        payload = {
+            "txn_id": txn.id,
+            "amount": (
+                float(txn.total_amount) if txn.total_amount is not None else None
+            ),
+            "vendor_name": txn.vendor_name,
+            "merchant_raw": raw.get("merchant_raw"),
+            "merchant": raw.get("merchant"),
+            "line_descriptions": line_descriptions,
+            "txn_date": str(txn.txn_date) if txn.txn_date else None,
+            "posted_date": raw.get("posted_date"),
+            "source": txn.source,
+            "source_txn_id": txn.source_txn_id,
+            "ignored": txn.ignored,
+            "ignore_reason": txn.ignore_reason,
+            "confirmed_at": (
+                txn.confirmed_at.isoformat() if txn.confirmed_at else None
+            ),
+            "created_at": (
+                txn.created_in_db.isoformat() if txn.created_in_db else None
+            ),
+            "confirmed_ad_crm_id": txn.confirmed_ad_crm_id,
+            "related": None,
+        }
+
+        # Optional related-CRM summary. Only for a CONSUMED txn (a logical CRM ad
+        # pointer is set). A CRM outage must NOT sink the whole endpoint — the
+        # txn detail always renders; we degrade to related=null + related_error.
+        if txn.confirmed_ad_crm_id:
+            try:
+                ad = _lookup_crm_ad(txn.confirmed_ad_crm_id)
+            except Exception:
+                logger.exception(
+                    "related-CRM lookup failed for bank txn id=%s (ad_crm_id=%s)",
+                    txn.id,
+                    txn.confirmed_ad_crm_id,
+                )
+                payload["related_error"] = "crm_unavailable"
+            else:
+                if ad is not None:
+                    payload["related"] = {
+                        "crm_id": ad.crm_id,
+                        "case_number": (
+                            str(ad.case_number)
+                            if ad.case_number is not None
+                            else None
+                        ),
+                        "client_name": ad.client_name,
+                        "ad_number": ad.ad_number,
+                        "newspaper_name": ad.newspaper_name,
+                    }
+
+        return jsonify(payload)

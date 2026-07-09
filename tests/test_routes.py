@@ -5,6 +5,7 @@ We exercise the real Flask routing/JSON via a test client and assert the
 configured/unconfigured/not-found branches and the unconfirmed set-subtraction.
 """
 
+import json
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
@@ -501,6 +502,7 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
     assert ad_a["buy_date"] == "2026-06-02"
     assert ad_a["beneficiary_last"] == "Doe"
     # Mapped bank + gmail + confirmed_at info.
+    assert ad_a["bank_txn_id"] == 11
     assert ad_a["bank_amount"] == -100.0
     assert ad_a["bank_txn_date"] == "2026-06-02"
     assert ad_a["gmail_thread_id"] == "thrA"
@@ -526,8 +528,180 @@ def test_reconciled_none_safe_when_no_bank_txn(client, monkeypatch):
     data = resp.get_json()
     assert data["count"] == 1
     ad = data["ads"][0]
+    assert ad["bank_txn_id"] is None
     assert ad["bank_amount"] is None
     assert ad["bank_txn_date"] is None
     assert ad["gmail_thread_id"] is None
     assert ad["gmail_url"] == ""
     assert ad["confirmed_at"] is None
+
+
+# --------------------------------------------------------------------------- #
+# /bank-transaction/<txn_id> — read-only Bank-Trx modal detail
+# --------------------------------------------------------------------------- #
+class _GetSession:
+    """Minimal session exposing ``get(BankTransaction, pk)`` -> a fixed row.
+
+    Mirrors ``Session.get``: returns the stored txn (representing the row for the
+    requested id) or ``None`` to model an unknown id (404 path).
+    """
+
+    def __init__(self, txn):
+        self._txn = txn
+
+    def get(self, model, pk):
+        return self._txn
+
+
+def _detail_txn(**overrides):
+    """A BankTransaction seed for the detail endpoint tests."""
+    fields = dict(
+        id=42,
+        source="email-scan",
+        source_txn_id="msg-123:0",
+        txn_date=date(2026, 6, 26),
+        total_amount=-2226.94,
+        vendor_name="LA TIMES MEDIA GR",
+        line_descriptions=["col-fallback-line"],
+        raw_json={
+            "merchant_raw": "CHECKCARD LA TIMES MEDIA GR EL SEGUNDO CA ON 06/26 Debit",
+            "merchant": "LA TIMES MEDIA GR",
+            "posted_date": "2026-06-27",
+        },
+        confirmed_ad_crm_id=None,
+        confirmed_at=None,
+        ignored=False,
+        ignore_reason=None,
+        created_in_db=datetime(2026, 6, 28, 9, 30, tzinfo=timezone.utc),
+    )
+    fields.update(overrides)
+    return BankTransaction(**fields)
+
+
+def test_bank_transaction_404_unknown_id(client, monkeypatch):
+    _patch_db(monkeypatch, _GetSession(None))
+    resp = client.get("/confirmed-ctl/bank-transaction/999999")
+    assert resp.status_code == 404
+    assert resp.get_json() == {"error": "not_found"}
+
+
+def test_bank_transaction_consumed_related_populated(client, monkeypatch):
+    # A CONSUMED txn (confirmed_ad_crm_id set) -> related CRM summary populated.
+    txn = _detail_txn(confirmed_ad_crm_id="REC777",
+                      confirmed_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc))
+    _patch_db(monkeypatch, _GetSession(txn))
+    ad = CrmAd(crm_id="REC777", ad_number="IPR00160880",
+               client_name="Eduexplora International", newspaper_name="LA Times",
+               case_number="A-2026-0042")
+    monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
+
+    resp = client.get("/confirmed-ctl/bank-transaction/42")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["txn_id"] == 42
+    # amount is the raw signed total_amount (debit stays negative, as-is).
+    assert data["amount"] == -2226.94
+    assert data["vendor_name"] == "LA TIMES MEDIA GR"
+    # merchant_raw / merchant / posted_date come from raw_json (a dict here).
+    assert data["merchant_raw"].startswith("CHECKCARD LA TIMES MEDIA GR")
+    assert data["merchant"] == "LA TIMES MEDIA GR"
+    assert data["posted_date"] == "2026-06-27"
+    assert data["txn_date"] == "2026-06-26"
+    assert data["source"] == "email-scan"
+    assert data["source_txn_id"] == "msg-123:0"
+    assert data["ignored"] is False
+    assert data["ignore_reason"] is None
+    assert data["confirmed_ad_crm_id"] == "REC777"
+    assert data["confirmed_at"].startswith("2026-06-29")
+    assert data["created_at"].startswith("2026-06-28")
+    # Related CRM summary populated for the consumed txn.
+    assert "related_error" not in data
+    assert data["related"] == {
+        "crm_id": "REC777",
+        "case_number": "A-2026-0042",
+        "client_name": "Eduexplora International",
+        "ad_number": "IPR00160880",
+        "newspaper_name": "LA Times",
+    }
+
+
+def test_bank_transaction_unconsumed_related_null(client, monkeypatch):
+    # An UNCONSUMED txn (no confirmed_ad_crm_id) -> related is null; get_ad is
+    # never even called.
+    txn = _detail_txn(confirmed_ad_crm_id=None)
+    _patch_db(monkeypatch, _GetSession(txn))
+
+    def _must_not_lookup(_id):  # pragma: no cover
+        raise AssertionError("get_ad must not run for an unconsumed txn")
+
+    monkeypatch.setattr(routes.crm_client, "get_ad", _must_not_lookup)
+
+    resp = client.get("/confirmed-ctl/bank-transaction/42")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["confirmed_ad_crm_id"] is None
+    assert data["related"] is None
+    assert "related_error" not in data
+
+
+def test_bank_transaction_raw_json_dict_extraction(client, monkeypatch):
+    # raw_json stored as a dict (JSONB) -> merchant/posted_date extracted; the
+    # raw_json line_descriptions wins over the column fallback.
+    txn = _detail_txn(raw_json={
+        "merchant_raw": "RAW MEMO STRING",
+        "merchant": "Merchant Co",
+        "posted_date": "2026-07-01",
+        "line_descriptions": ["from-raw-json"],
+    })
+    _patch_db(monkeypatch, _GetSession(txn))
+
+    resp = client.get("/confirmed-ctl/bank-transaction/42")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["merchant_raw"] == "RAW MEMO STRING"
+    assert data["merchant"] == "Merchant Co"
+    assert data["posted_date"] == "2026-07-01"
+    assert data["line_descriptions"] == ["from-raw-json"]
+
+
+def test_bank_transaction_raw_json_string_extraction(client, monkeypatch):
+    # raw_json stored as a JSON STRING must be parsed; missing line_descriptions
+    # in raw_json falls back to the ARRAY column value.
+    raw_str = (
+        '{"merchant_raw": "STRING MEMO", "merchant": "Stringy Inc", '
+        '"posted_date": "2026-07-02"}'
+    )
+    txn = _detail_txn(raw_json=raw_str, line_descriptions=["col-fallback-line"])
+    _patch_db(monkeypatch, _GetSession(txn))
+
+    resp = client.get("/confirmed-ctl/bank-transaction/42")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["merchant_raw"] == "STRING MEMO"
+    assert data["merchant"] == "Stringy Inc"
+    assert data["posted_date"] == "2026-07-02"
+    # raw_json had no line_descriptions -> column fallback used.
+    assert data["line_descriptions"] == ["col-fallback-line"]
+
+
+def test_bank_transaction_related_error_when_crm_fails(client, monkeypatch):
+    # The OPTIONAL related-CRM lookup raising must NOT 502 the endpoint: the txn
+    # detail still renders with related=null + related_error=crm_unavailable.
+    txn = _detail_txn(confirmed_ad_crm_id="REC777")
+    _patch_db(monkeypatch, _GetSession(txn))
+
+    def _boom(_id):
+        raise RuntimeError("pymysql: (2003) Can't connect to MySQL server")
+
+    monkeypatch.setattr(routes.crm_client, "get_ad", _boom)
+
+    resp = client.get("/confirmed-ctl/bank-transaction/42")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    # The txn detail is fully present despite the CRM outage.
+    assert data["txn_id"] == 42
+    assert data["amount"] == -2226.94
+    assert data["related"] is None
+    assert data["related_error"] == "crm_unavailable"
+    # No raw exception text leaked to the client.
+    assert "pymysql" not in json.dumps(data)
