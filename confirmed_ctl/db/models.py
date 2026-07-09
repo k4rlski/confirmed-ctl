@@ -74,6 +74,12 @@ class CrmAd:
     run_date: date | None = None
     expected_charge_date: date | None = None
     expected_amount: float | None = None
+    # Richer ad-identifying fields surfaced for the MARS reconcile page (ABCF-X
+    # style columns). All read-only from the CRM ``t_e_s_t_p_e_r_m`` row.
+    case_number: str | None = None
+    state: str | None = None
+    attorney: str | None = None
+    entity: str | None = None
 
 
 class BankTransaction(Base):

@@ -218,6 +218,11 @@ def get_candidates(ad_crm_id: str):
                 ),
                 "run_date": str(ad.run_date) if ad.run_date else None,
                 "client_name": ad.client_name,
+                # Richer ad-identifying fields (ABCF-X columns), None-safe strings.
+                "case_number": str(ad.case_number) if ad.case_number is not None else None,
+                "state": str(ad.state) if ad.state is not None else None,
+                "attorney": str(ad.attorney) if ad.attorney is not None else None,
+                "entity": str(ad.entity) if ad.entity is not None else None,
             },
             "bank_candidates": [
                 {
@@ -473,6 +478,11 @@ def list_unconfirmed():
                 "expected_amount": (
                     float(ad.expected_amount) if ad.expected_amount is not None else None
                 ),
+                # Richer ad-identifying fields (ABCF-X columns), None-safe strings.
+                "case_number": str(ad.case_number) if ad.case_number is not None else None,
+                "state": str(ad.state) if ad.state is not None else None,
+                "attorney": str(ad.attorney) if ad.attorney is not None else None,
+                "entity": str(ad.entity) if ad.entity is not None else None,
             }
             for ad in unconfirmed
         ],
