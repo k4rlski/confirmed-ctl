@@ -69,6 +69,8 @@ def _sample_row(**overrides):
         "newspapers_name": "Miami Herald",
         "rank": 1,
         "pricenewsreal": 1368.0,
+        "casenumber": "A-2026-0042",
+        "jobsitestate": "CA",
     }
     row.update(overrides)
     return row
@@ -134,7 +136,41 @@ def test_list_clearances_query_verbatim_and_mapping(monkeypatch, configured):
     assert ad.run_date == date(2026, 6, 15)
     assert ad.expected_charge_date == date(2026, 6, 17)
     assert ad.expected_amount == 1368.0
+    # Richer ad-identifying fields (ABCF-X columns).
+    assert ad.case_number == "A-2026-0042"
+    assert ad.state == "CA"
+    assert ad.attorney == "Jane Atty"
+    assert ad.entity == "JKT"
     assert conn.closed is True
+
+
+def test_select_from_includes_new_columns():
+    # The read SELECT must fetch casenumber + jobsitestate (attyname + entity
+    # were already selected) so _row_to_crm_ad can map the ABCF-X columns.
+    assert "t_e_s_t_p_e_r_m.casenumber" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.jobsitestate" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.attyname" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.entity" in crm._SELECT_FROM
+
+
+def test_row_to_crm_ad_maps_richer_fields_and_strips_ad_number(monkeypatch, configured):
+    # adnumbernews carries a trailing space in the CRM — it must be stripped.
+    conn = FakeConn([_sample_row(adnumbernews="IPR00160880 ")])
+    monkeypatch.setattr(crm, "_connect", lambda: conn)
+
+    ad = crm.list_clearances()[0]
+    assert ad.ad_number == "IPR00160880"  # trailing space stripped
+    assert ad.case_number == "A-2026-0042"
+    assert ad.state == "CA"
+    assert ad.attorney == "Jane Atty"
+    assert ad.entity == "JKT"
+
+
+def test_row_to_crm_ad_ad_number_none_safe(monkeypatch, configured):
+    conn = FakeConn([_sample_row(adnumbernews=None)])
+    monkeypatch.setattr(crm, "_connect", lambda: conn)
+    ad = crm.list_clearances()[0]
+    assert ad.ad_number is None
 
 
 def test_list_clearances_charge_date_falls_back_to_run_date(monkeypatch, configured):

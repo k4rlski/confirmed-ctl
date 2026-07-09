@@ -77,6 +77,10 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
         run_date=date(2026, 6, 15),
         expected_charge_date=date(2026, 6, 17),
         expected_amount=1368.0,
+        case_number="A-2026-0042",
+        state="CA",
+        attorney="Jane Atty",
+        entity="JKT",
     )
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(
@@ -91,6 +95,11 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     data = resp.get_json()
     assert data["ad"]["crm_id"] == "REC123"
     assert data["ad"]["ad_number"] == "IPR00160880"
+    # Richer ad-identifying fields (ABCF-X columns) exposed on the candidates ad.
+    assert data["ad"]["case_number"] == "A-2026-0042"
+    assert data["ad"]["state"] == "CA"
+    assert data["ad"]["attorney"] == "Jane Atty"
+    assert data["ad"]["entity"] == "JKT"
     assert len(data["bank_candidates"]) == 1
     cand = data["bank_candidates"][0]
     assert cand["txn_id"] == 1
@@ -139,6 +148,11 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     ad_json = resp.get_json()["ad"]
     assert ad_json["expected_amount"] == 0.0
     assert ad_json["run_date"] is None
+    # Unset richer fields serialize as null (not the string "None").
+    assert ad_json["case_number"] is None
+    assert ad_json["state"] is None
+    assert ad_json["attorney"] is None
+    assert ad_json["entity"] is None
 
 
 def test_candidates_survives_gmail_failure(client, monkeypatch):
@@ -212,7 +226,8 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
               expected_amount=100.0),
         CrmAd(crm_id="B", ad_number="AD-B", newspaper_name="Sun Sentinel",
               run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
-              expected_amount=200.0),
+              expected_amount=200.0, case_number="B-2026-0007", state="NY",
+              attorney="John Atty", entity="PA"),
     ]
     monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
     # "A" is already confirmed in Postgres -> only "B" should remain.
@@ -224,6 +239,12 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
     assert data["count"] == 1
     assert [a["crm_id"] for a in data["ads"]] == ["B"]
     assert data["ads"][0]["expected_amount"] == 200.0
+    # Richer ad-identifying fields (ABCF-X columns) exposed on the unconfirmed ads.
+    ad_b = data["ads"][0]
+    assert ad_b["case_number"] == "B-2026-0007"
+    assert ad_b["state"] == "NY"
+    assert ad_b["attorney"] == "John Atty"
+    assert ad_b["entity"] == "PA"
 
 
 def test_unconfirmed_all_when_none_confirmed(client, monkeypatch):

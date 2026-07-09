@@ -69,7 +69,8 @@ _SELECT_FROM = """SELECT news.owner AS owner, t_e_s_t_p_e_r_m.id, t_e_s_t_p_e_r_
        t_e_s_t_p_e_r_m.entity, t_e_s_t_p_e_r_m.statclearancenews, t_e_s_t_p_e_r_m.statnews,
        t_e_s_t_p_e_r_m.statacctgcreditnews, t_e_s_t_p_e_r_m.dboxemailthreadcase,
        t_e_s_t_p_e_r_m.adnumbernews, news.name AS newspapers_name, news.rank,
-       t_e_s_t_p_e_r_m.pricenewsreal
+       t_e_s_t_p_e_r_m.pricenewsreal, t_e_s_t_p_e_r_m.casenumber,
+       t_e_s_t_p_e_r_m.jobsitestate
 FROM t_e_s_t_p_e_r_m
 JOIN news ON t_e_s_t_p_e_r_m.news_id = news.id"""
 
@@ -167,15 +168,24 @@ def _connect_write():
 
 def _row_to_crm_ad(row: dict) -> CrmAd:
     """Map one CRM result row (DictCursor) to a :class:`CrmAd` read view."""
+    # CRM ``adnumbernews`` carries a trailing space; strip it so downstream
+    # consumers (Gmail search / deep-links) get a clean ad number.
+    ad_number = row.get("adnumbernews")
+    if ad_number is not None:
+        ad_number = ad_number.strip()
     return CrmAd(
         crm_id=str(row["id"]) if row.get("id") is not None else None,
-        ad_number=row.get("adnumbernews"),
+        ad_number=ad_number,
         client_name=row.get("name"),
         newspaper_name=row.get("newspapers_name"),
         run_date=row.get("datenewsstart"),
         # Charge date is the "date buy news"; fall back to the run start date.
         expected_charge_date=row.get("datebuynews") or row.get("datenewsstart"),
         expected_amount=row.get("pricenewsreal"),
+        case_number=row.get("casenumber"),
+        state=row.get("jobsitestate"),
+        attorney=row.get("attyname"),
+        entity=row.get("entity"),
     )
 
 
