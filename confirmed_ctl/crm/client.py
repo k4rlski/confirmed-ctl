@@ -1,23 +1,63 @@
 """confirmed_ctl/crm/client.py
 
-Read-only (SELECT-only) adapter into the MariaDB CRM ``permtrak2_crm`` on
-``permtrak.com``. Ad / case data lives ONLY in the CRM (see
-``confirmed_ctl/db/models.py``); this module reads it into lightweight
-:class:`~confirmed_ctl.db.models.CrmAd` read views and NEVER writes.
+Adapter into the MariaDB CRM ``permtrak2_crm`` on ``permtrak.com``. Ad / case
+data lives ONLY in the CRM (see ``confirmed_ctl/db/models.py``); the read side of
+this module reads it into lightweight
+:class:`~confirmed_ctl.db.models.CrmAd` read views.
 
 Connection pattern mirrors the mars-status reports helper: ``pymysql.connect``
 with a ``DictCursor``, ``connect_timeout=10`` and ``read_timeout=60``, driven by
-the ``CRM_DB_*`` settings. CRM write-back (statclearancenews -> '["Done"]',
-trxstring, urlgmailadconfirm, datepaidnews) is intentionally NOT implemented
-here — it is a separate later generation.
+the ``CRM_DB_*`` settings.
+
+CRM WRITE-BACK (the ONLY non-SELECT this package ever issues to the CRM) lives in
+:func:`update_ad_clearance`. It is guarded two ways so a write can never happen
+by accident:
+
+1. **Feature gate** — it refuses (raises :class:`CrmWriteDisabled`) unless
+   ``settings.CRM_WRITE_ENABLED`` is true (env ``CONFIRMED_CTL_CRM_WRITE``,
+   default false; set true ONLY on fang).
+2. **Strict 4-field allowlist** — it issues a SINGLE parameterized UPDATE whose
+   column list is HARDCODED to exactly ``statclearancenews`` (bound to the
+   literal ``'["Done"]'``), ``trxstring``, ``urlgmailadconfirm`` and
+   ``datepaidnews``, keyed by ``WHERE id=%s``. There is no dynamic /
+   caller-supplied column name, ever, and every value is bound via ``%s`` (never
+   string-interpolated).
 """
 
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from .. import settings
 from ..db.models import CrmAd
+
+
+class CrmWriteDisabled(RuntimeError):
+    """Raised by :func:`update_ad_clearance` when the CRM write gate is off.
+
+    Callers (``/confirm``) catch this to report ``crm_write: "disabled"`` — it
+    guarantees NO UPDATE was issued to the live CRM.
+    """
+
+
+class CrmWriteError(RuntimeError):
+    """Raised by :func:`update_ad_clearance` when the write cannot be trusted.
+
+    Two cases:
+
+    - **No matching row** — the UPDATE committed but ``cursor.rowcount`` was 0,
+      meaning NO ``t_e_s_t_p_e_r_m`` row matched ``ad_crm_id`` (bad/stale id). We
+      open the write connection with ``CLIENT.FOUND_ROWS`` so rowcount reflects
+      MATCHED (not CHANGED) rows — a re-write of identical values still counts as
+      1. rowcount==0 therefore unambiguously means "no such id", never "value
+      unchanged".
+    - **Invalid input** — an empty/``None`` ``ad_crm_id`` (this write is the last
+      line of defense; we never issue an UPDATE without a real id).
+
+    Callers (``/confirm``) map this to a 502 and MUST NOT commit the local
+    Postgres confirmation, so the confirm stays cleanly retryable.
+    """
 
 # ---------------------------------------------------------------------------
 # SQL — the ABCF-X clearances query is reused VERBATIM. The SELECT column list
@@ -100,6 +140,32 @@ def _connect():
     )
 
 
+def _connect_write():
+    """Open the CRM connection used by :func:`update_ad_clearance`.
+
+    Identical to :func:`_connect` EXCEPT it sets ``client_flag=CLIENT.FOUND_ROWS``
+    so ``cursor.rowcount`` after the UPDATE reflects MATCHED rows rather than
+    CHANGED rows. This is critical for idempotent re-writes: without FOUND_ROWS,
+    re-writing the SAME values (backfill/retry) returns rowcount=0 and would look
+    like a failure. With it, rowcount==1 whenever the id matches (even if values
+    are unchanged) and rowcount==0 ONLY when no row matches the id.
+    """
+    import pymysql
+    from pymysql.constants import CLIENT
+
+    return pymysql.connect(
+        host=settings.CRM_DB_HOST,
+        port=settings.CRM_DB_PORT,
+        user=settings.CRM_DB_USER,
+        password=settings.CRM_DB_PASS,
+        database=settings.CRM_DB_NAME,
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=10,
+        read_timeout=60,
+        client_flag=CLIENT.FOUND_ROWS,
+    )
+
+
 def _row_to_crm_ad(row: dict) -> CrmAd:
     """Map one CRM result row (DictCursor) to a :class:`CrmAd` read view."""
     return CrmAd(
@@ -150,3 +216,100 @@ def get_ad(ad_crm_id: str) -> CrmAd | None:
     if not row:
         return None
     return _row_to_crm_ad(row)
+
+
+# ---------------------------------------------------------------------------
+# WRITE-BACK — the ONLY non-SELECT statement in this package.
+# ---------------------------------------------------------------------------
+
+# The clearance-done marker. EspoCRM stores multi-enum fields as JSON arrays, so
+# statclearancenews is the literal string '["Done"]' (json.dumps(["Done"])) —
+# NOT the plain 'Done'.
+CLEARANCE_DONE = json.dumps(["Done"])  # '["Done"]'
+
+# HARDCODED, strict 4-field allowlist. The column list is fixed here and never
+# derived from caller input; only the VALUES are bound (``%s``). Order of bound
+# params: statclearancenews, trxstring, urlgmailadconfirm, datepaidnews, id.
+UPDATE_AD_CLEARANCE_SQL = (
+    "UPDATE t_e_s_t_p_e_r_m "
+    "SET statclearancenews=%s, trxstring=%s, urlgmailadconfirm=%s, datepaidnews=%s "
+    "WHERE id=%s"
+)
+
+
+def update_ad_clearance(
+    ad_crm_id: str,
+    trxstring: str,
+    urlgmailadconfirm: str,
+    datepaid: date | str | None,
+) -> None:
+    """Write the clearance-done marker + audit fields back to ONE CRM ad.
+
+    Issues a SINGLE parameterized UPDATE against ``t_e_s_t_p_e_r_m`` setting the
+    strict 4-field allowlist (``statclearancenews='["Done"]'``, ``trxstring``,
+    ``urlgmailadconfirm``, ``datepaidnews``) ``WHERE id=%s``, then commits. Every
+    value is bound via ``%s``; no value is ever string-interpolated and no column
+    name is caller-supplied.
+
+    GATED: if ``settings.CRM_WRITE_ENABLED`` is false this raises
+    :class:`CrmWriteDisabled` BEFORE opening any connection, so dev/test never
+    touches the live CRM.
+
+    VALIDATED: an empty/``None`` ``ad_crm_id`` raises :class:`CrmWriteError`
+    BEFORE any connection is opened — this write is the last line of defense and
+    must never issue an UPDATE without a real id.
+
+    VERIFIED: the write connection is opened with ``CLIENT.FOUND_ROWS`` and after
+    commit ``cursor.rowcount`` is checked. rowcount==0 means NO row matched
+    ``ad_crm_id`` (the id is bad/stale) — this raises :class:`CrmWriteError`
+    WITHOUT reporting success, so the caller does not persist a confirmation for a
+    write that never landed. rowcount>=1 (a match, even with unchanged values) is
+    success.
+
+    ``datepaid`` may be a :class:`datetime.date` (formatted ``YYYY-MM-DD``) or an
+    already-formatted string (passed through); ``None`` binds SQL ``NULL``.
+    """
+    if not settings.CRM_WRITE_ENABLED:
+        raise CrmWriteDisabled(
+            "CRM write-back is disabled: set CONFIRMED_CTL_CRM_WRITE=true "
+            "(fang only) to enable update_ad_clearance."
+        )
+
+    if not ad_crm_id:
+        raise CrmWriteError(
+            "update_ad_clearance requires a non-empty ad_crm_id; refusing to "
+            "issue an UPDATE without a target CRM record id."
+        )
+
+    if isinstance(datepaid, date):
+        datepaid_value: str | None = datepaid.strftime("%Y-%m-%d")
+    elif datepaid is None or datepaid == "":
+        datepaid_value = None
+    else:
+        datepaid_value = str(datepaid)
+
+    conn = _connect_write()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                UPDATE_AD_CLEARANCE_SQL,
+                (
+                    CLEARANCE_DONE,
+                    trxstring,
+                    urlgmailadconfirm,
+                    datepaid_value,
+                    ad_crm_id,
+                ),
+            )
+            matched = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+
+    # FOUND_ROWS => rowcount reflects MATCHED rows. 0 means no CRM row has this
+    # id, so the write never landed — surface it instead of a false success.
+    if matched == 0:
+        raise CrmWriteError(
+            f"CRM write matched no row for ad_crm_id={ad_crm_id!r}; the id does "
+            "not exist in t_e_s_t_p_e_r_m (nothing was updated)."
+        )

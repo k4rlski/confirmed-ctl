@@ -203,10 +203,12 @@ def test_adapter_issues_only_selects(monkeypatch, configured):
         assert write_re.search(upper) is None
 
 
-def test_module_source_has_no_write_sql():
-    # Belt-and-suspenders: the adapter source contains no write statements.
-    import inspect
-
-    src = inspect.getsource(crm).upper()
-    for tok in ("INSERT INTO", "UPDATE ", "DELETE FROM", "REPLACE INTO", " DROP ", "TRUNCATE"):
-        assert tok not in src
+def test_read_query_constants_are_select_only():
+    # Belt-and-suspenders: the READ query constants issue SELECT only and carry
+    # no write verbs. (The module also has update_ad_clearance — the single,
+    # gated, allowlisted write — which is covered by tests/test_crm_writeback.py.)
+    write_re = re.compile(r"\b(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|TRUNCATE)\b")
+    for query in (crm.CLEARANCES_QUERY, crm.GET_AD_QUERY, crm._SELECT_FROM):
+        upper = query.upper()
+        assert upper.lstrip().startswith("SELECT")
+        assert write_re.search(upper) is None

@@ -61,6 +61,15 @@ CRM_DB_PASS = _get("CRM_DB_PASS")
 CRM_DB_NAME = _get("CRM_DB_NAME")
 CRM_DB_PORT = _get_int("CRM_DB_PORT", 3306)
 
+# CRM WRITE-BACK gate (default FALSE => read-only everywhere; dev/test NEVER
+# write to the live CRM). When true, /confirm issues ONE strictly-allowlisted
+# UPDATE to the matched ``t_e_s_t_p_e_r_m`` record via
+# ``confirmed_ctl.crm.client.update_ad_clearance`` (columns statclearancenews,
+# trxstring, urlgmailadconfirm, datepaidnews — nothing else). Set
+# ``CONFIRMED_CTL_CRM_WRITE=true`` ONLY on the fang service, where the
+# ``permtrak2_crm`` user is granted from fang's IP.
+CRM_WRITE_ENABLED = _get_bool("CONFIRMED_CTL_CRM_WRITE", False)
+
 # Gmail
 # GMAIL_TOKEN_PATH points at the Google **service-account** JSON key file used for
 # read-only, domain-wide-delegated access (impersonating GMAIL_IMPERSONATE). The

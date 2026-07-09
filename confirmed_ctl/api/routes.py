@@ -13,10 +13,12 @@ is no ``ad_purchases`` Postgres table. The endpoints that need to *read* a CRM a
 adapter (see ``_lookup_crm_ad``); when the CRM is unconfigured they return 503.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
 
+from .. import settings
 from ..crm import client as crm_client
 from ..db.models import AdConfirmation, BankTransaction, CrmAd, SyncLog
 from ..db.session import get_db
@@ -38,6 +40,79 @@ def _lookup_crm_ad(ad_crm_id: str) -> CrmAd | None:
     should surface a 503) or when no row matches the id (callers 404).
     """
     return crm_client.get_ad(ad_crm_id)
+
+
+# --------------------------------------------------------------------------- #
+# CRM write-back value builders (see confirmed_ctl.crm.client.update_ad_clearance)
+#
+# These assemble the exact VERIFIED write formats reproduced from a completed CRM
+# record. They are plain text fields, easily tuned later.
+# --------------------------------------------------------------------------- #
+def _format_signed_amount(amount) -> str:
+    """Format a signed dollar amount like ``-$2,226.94`` (debits lead with '-').
+
+    Thousands comma, exactly 2 decimals, leading ``$``; a leading minus for
+    negative (debit) amounts. Bank alerts store debits as negative amounts.
+    Returns an empty string when the amount is missing/unparseable.
+    """
+    if amount is None:
+        return ""
+    try:
+        value = Decimal(str(amount))
+    except (InvalidOperation, ValueError, TypeError):
+        return ""
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _build_trxstring(txn: BankTransaction) -> str:
+    """Assemble the CRM ``trxstring`` from a matched bank transaction.
+
+    Verified reference literal (from completed record 6a343d2127bb55b5a) was::
+
+        CHECKCARD LA TIMES MEDIA GR EL SEGUNDO CA ON 06/26 Debit\\t-$2,226.94
+
+    i.e. a rich memo/description composite, a literal TAB, then the signed
+    amount. The email-scan adapter does not carry BofA's verbatim memo, so we
+    build the richest composite available from the model:
+
+        {payment_type} {vendor_name} ON MM/DD {Debit|Credit}\\t{signed amount}
+
+    Non-empty parts only; the amount sign drives the Debit/Credit word and the
+    ``-$`` sign. This is a plain TEXT field — tune the template freely later.
+    """
+    parts: list[str] = []
+    if txn.payment_type:
+        parts.append(str(txn.payment_type).strip())
+    if txn.vendor_name:
+        parts.append(str(txn.vendor_name).strip())
+    if txn.txn_date:
+        parts.append(f"ON {txn.txn_date:%m/%d}")
+    if txn.total_amount is not None:
+        try:
+            direction = "Debit" if Decimal(str(txn.total_amount)) < 0 else "Credit"
+            parts.append(direction)
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+    memo = " ".join(p for p in parts if p)
+    return f"{memo}\t{_format_signed_amount(txn.total_amount)}"
+
+
+def _build_gmail_url(ad_number: str | None, gmail_thread_id: str | None) -> str:
+    """Build the CRM ``urlgmailadconfirm`` Gmail deep link.
+
+    Format (verified)::
+
+        https://mail.google.com/mail/u/1/#search/{adnumber}/{gmail_thread_id}
+
+    ``adnumber`` is the ad number ``.strip()``ed (CRM ``adnumbernews`` carries
+    trailing spaces). Returns an empty string when no thread id was selected —
+    the caller still writes the other fields but logs the omission.
+    """
+    if not gmail_thread_id:
+        return ""
+    adnum = (ad_number or "").strip()
+    return f"https://mail.google.com/mail/u/1/#search/{adnum}/{gmail_thread_id}"
 
 
 @confirmed_ctl_bp.route("/sync", methods=["POST"])
@@ -194,6 +269,75 @@ def confirm_ad():
         if existing:
             return jsonify({"error": "Ad already confirmed", "confirmation_id": existing.id}), 409
 
+        # --- CRM write-back (verified 4-field allowlist, gated) ---------------
+        # Assemble the exact write values from the matched bank transaction /
+        # request, then (only when the gate is on and there is a matched txn)
+        # write them to the CRM BEFORE committing the Postgres confirmation, so a
+        # CRM failure leaves nothing persisted and the confirm is cleanly
+        # retryable.
+        trxstring = _build_trxstring(txn) if txn else ""
+        gmail_url = _build_gmail_url(ad_number, thread_id)
+        datepaid = (
+            txn.txn_date.strftime("%Y-%m-%d")
+            if txn and isinstance(txn.txn_date, date)
+            else ""
+        )
+
+        if settings.CRM_WRITE_ENABLED:
+            if txn and ad_crm_id:
+                if not thread_id:
+                    logger.warning(
+                        "confirm: no gmail_thread_id for ad_crm_id=%s; "
+                        "writing empty urlgmailadconfirm",
+                        ad_crm_id,
+                    )
+                try:
+                    crm_client.update_ad_clearance(
+                        ad_crm_id=ad_crm_id,
+                        trxstring=trxstring,
+                        urlgmailadconfirm=gmail_url,
+                        datepaid=datepaid,
+                    )
+                    crm_write = "written"
+                except crm_client.CrmWriteDisabled:
+                    # Gate flipped off between check and call — treat as disabled.
+                    crm_write = "disabled"
+                except crm_client.CrmWriteError:
+                    # The UPDATE matched NO CRM row for this ad_crm_id (bad/stale
+                    # id) — the write never landed. Do NOT commit the Postgres
+                    # confirmation; roll back and return a controlled 502 so the
+                    # confirm can be retried once the id is corrected.
+                    logger.error(
+                        "CRM write-back matched no row for ad_crm_id=%s", ad_crm_id
+                    )
+                    db.rollback()
+                    return jsonify({
+                        "status": "crm_write_failed",
+                        "detail": "no CRM row matched ad_crm_id",
+                        "ad_crm_id": ad_crm_id,
+                    }), 502
+                except Exception:
+                    # A live CRM UPDATE failure (pymysql error). Do NOT commit the
+                    # Postgres confirmation — roll back and return a controlled 502
+                    # so the confirm can be retried cleanly.
+                    logger.exception(
+                        "CRM write-back failed for ad_crm_id=%s", ad_crm_id
+                    )
+                    db.rollback()
+                    return jsonify({
+                        "status": "crm_write_failed",
+                        "detail": (
+                            "CRM write-back failed; the CRM is unreachable or "
+                            "rejected the update. No confirmation was saved — retry."
+                        ),
+                        "ad_crm_id": ad_crm_id,
+                    }), 502
+            else:
+                # Enabled but nothing to write against (no matched bank txn).
+                crm_write = "skipped_no_txn"
+        else:
+            crm_write = "disabled"
+
         confirmed_at = datetime.now(timezone.utc)
 
         # Create confirmation record (logical ad reference — no FK to ad data).
@@ -215,7 +359,36 @@ def confirm_ad():
             txn.confirmed_ad_crm_id = ad_crm_id
             txn.confirmed_at = confirmed_at
 
-        db.commit()
+        if crm_write == "written":
+            # Reverse-orphan guard: the CRM row is ALREADY marked Done. If the
+            # Postgres commit now fails we have a CRM write with no local record.
+            # Log CRITICAL with the written values so it can be reconciled, and
+            # return a controlled 500. Retry is safe: no AdConfirmation exists (so
+            # no 409) and the CRM re-write is idempotent (FOUND_ROWS => rowcount
+            # 1 on the unchanged row).
+            try:
+                db.commit()
+            except Exception:
+                logger.critical(
+                    "CRM written (statclearancenews=Done) but Postgres commit "
+                    "FAILED — reconcile ad_crm_id=%s (retry is idempotent/"
+                    "self-healing) trxstring=%r urlgmailadconfirm=%r "
+                    "datepaidnews=%r",
+                    ad_crm_id,
+                    trxstring,
+                    gmail_url,
+                    datepaid,
+                )
+                return jsonify({
+                    "status": "postgres_commit_failed_after_crm_write",
+                    "detail": (
+                        "CRM updated but local confirmation not saved; retry to "
+                        "reconcile"
+                    ),
+                    "ad_crm_id": ad_crm_id,
+                }), 500
+        else:
+            db.commit()
 
         # Store in RAG for future pattern learning (best-effort — never blocks confirm)
         if txn:
@@ -243,6 +416,15 @@ def confirm_ad():
             "ad_number": ad_number,
             "txn_source_txn_id": txn.source_txn_id if txn else None,
             "gmail_thread_id": thread_id,
+            # CRM write-back outcome + the exact values written (so the UI can
+            # display them). "written" / "disabled" / "skipped_no_txn".
+            "crm_write": crm_write,
+            "crm_values": {
+                "statclearancenews": "Done",
+                "trxstring": trxstring,
+                "urlgmailadconfirm": gmail_url,
+                "datepaidnews": datepaid,
+            },
         })
 
 
