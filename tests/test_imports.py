@@ -21,6 +21,7 @@ def test_core_modules_import():
         "confirmed_ctl.matching.rag",
         "confirmed_ctl.crm",
         "confirmed_ctl.crm.client",
+        "confirmed_ctl.ingest.ignore",
     ]:
         importlib.import_module(mod)
 
@@ -37,7 +38,13 @@ def test_cli_help_and_version():
 
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for cmd in ("sync", "status", "receipts", "match"):
+    for cmd in ("sync", "status", "receipts", "match", "ignore"):
+        assert cmd in result.output
+
+    # The ignore group exposes add/list/seed/backfill.
+    result = runner.invoke(cli, ["ignore", "--help"])
+    assert result.exit_code == 0
+    for cmd in ("add", "list", "seed", "backfill"):
         assert cmd in result.output
 
 

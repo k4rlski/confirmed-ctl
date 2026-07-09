@@ -22,6 +22,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -176,6 +177,15 @@ class BankTransaction(Base):
     created_in_db: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # DB-tracked ignore flag: when an ingested row's text matches an ACTIVE
+    # ``ignore_memo_patterns`` entry it is a SAAS/vendor charge (not a
+    # newspaper-ad payment). The row is flagged (never deleted) so the scorer
+    # skips it as a reconcile candidate but the audit trail is preserved.
+    # ``ignore_reason`` records which pattern matched (``ignore_pattern:<pattern>``).
+    ignored: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    ignore_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class AdConfirmation(Base):
@@ -235,3 +245,35 @@ class SyncLog(Base):
     auto_matched: Mapped[int | None] = mapped_column(Integer)
     errors: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class IgnoreMemoPattern(Base):
+    """A DB-tracked ignore-string used to flag SAAS/vendor bank charges.
+
+    ``pattern`` is a SHORT, stable substring (stored so trailing phone / location
+    / date noise on a bank memo does not break the match). During ingest every
+    ``active`` pattern is tested (case-insensitively) as a substring against a
+    transaction's text fields (``vendor_name``/``private_note``/``line_descriptions``
+    …); a hit sets ``bank_transactions.ignored = true`` so those recurring
+    software-subscription charges never surface as reconcile candidates. Rows are
+    flagged, never deleted — the audit trail is preserved.
+
+    ``label`` is a human-friendly name for the vendor (e.g. ``"Fireworks AI
+    (SAAS)"``). ``active`` lets a pattern be retired without deleting history.
+    """
+
+    __tablename__ = "ignore_memo_patterns"
+    __table_args__ = (
+        # Case-insensitive lookups on ``pattern`` (functional lower() index).
+        Index("ix_ignore_memo_patterns_pattern_ci", text("lower(pattern)")),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

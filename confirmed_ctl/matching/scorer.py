@@ -77,13 +77,16 @@ def get_candidate_transactions(
     window_start = charge_date - timedelta(days=lookback_days)
     window_end = charge_date + timedelta(days=lookahead_days)
 
-    # Pull candidate transactions — pre-filter by date window and unmatched only.
+    # Pull candidate transactions — pre-filter by date window and unmatched only,
+    # excluding rows flagged as SAAS/vendor noise (``ignored=true``). Those never
+    # belong in the reconcile candidate set.
     candidates = (
         db.query(BankTransaction)
         .filter(
             BankTransaction.txn_date >= window_start,
             BankTransaction.txn_date <= window_end,
             BankTransaction.confirmed_ad_crm_id.is_(None),
+            BankTransaction.ignored.is_(False),
         )
         .all()
     )
@@ -157,11 +160,15 @@ def get_excluded_transactions(
     outer_start = window_start - timedelta(days=EXCLUDED_LOOKUP_MARGIN_DAYS)
     outer_end = window_end + timedelta(days=EXCLUDED_LOOKUP_MARGIN_DAYS)
 
+    # SAAS/vendor rows flagged ``ignored=true`` are excluded from the scan: they
+    # are noise, not near-misses, so they must NOT resurface here as an exclusion
+    # reason (they simply do not appear).
     rows = (
         db.query(BankTransaction)
         .filter(
             BankTransaction.txn_date >= outer_start,
             BankTransaction.txn_date <= outer_end,
+            BankTransaction.ignored.is_(False),
         )
         .order_by(BankTransaction.txn_date.desc())
         .all()

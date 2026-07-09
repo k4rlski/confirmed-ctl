@@ -539,17 +539,28 @@ def _to_model(txn: EmailTxn):
     )
 
 
-def insert_transactions(session, txns: list[EmailTxn]) -> tuple[int, int]:
+def insert_transactions(
+    session,
+    txns: list[EmailTxn],
+    ignore_patterns: list[tuple[str, str | None]] | None = None,
+) -> tuple[int, int]:
     """Insert parsed transactions, skipping conflicts. Returns (inserted, skipped).
 
     Idempotent: a pre-check against ``(source, source_txn_id)`` skips already
     stored rows, and a per-row SAVEPOINT catches any residual unique-constraint
     violation (race / within-batch duplicate) as a SKIP rather than an error.
     Portable across Postgres and SQLite (uses only ORM primitives).
+
+    ``ignore_patterns`` (loaded once per run by the caller via
+    ``ingest.ignore.load_active_ignore_patterns``) flags SAAS/vendor rows: any
+    stored row whose text matches an active pattern gets ``ignored=true`` +
+    ``ignore_reason`` so the scorer skips it. The row is stored regardless (flag,
+    don't drop).
     """
     from sqlalchemy.exc import IntegrityError
 
     from ..db.models import BankTransaction
+    from .ignore import apply_ignore_flags
 
     inserted = 0
     skipped = 0
@@ -565,7 +576,10 @@ def insert_transactions(session, txns: list[EmailTxn]) -> tuple[int, int]:
 
         savepoint = session.begin_nested()
         try:
-            session.add(_to_model(txn))
+            model = _to_model(txn)
+            if ignore_patterns:
+                apply_ignore_flags(model, ignore_patterns)
+            session.add(model)
             session.flush()
             savepoint.commit()
             inserted += 1
@@ -665,7 +679,14 @@ def run_email_scan(session, lookback_days: int | None = None, service=None) -> d
             service = get_gmail_service()
         txns = scan_messages(service, lookback_days)
         found = len(txns)
-        inserted, skipped = insert_transactions(session, txns)
+        # Load the active ignore patterns ONCE per run so SAAS/vendor rows are
+        # flagged (ignored=true) as they are stored (flag, don't drop).
+        from .ignore import load_active_ignore_patterns
+
+        ignore_patterns = load_active_ignore_patterns(session)
+        inserted, skipped = insert_transactions(
+            session, txns, ignore_patterns=ignore_patterns
+        )
     except Exception as exc:  # record failure in the sync log, then re-raise
         errors = f"{type(exc).__name__}: {exc}"
         log.exception("email-scan run failed")
