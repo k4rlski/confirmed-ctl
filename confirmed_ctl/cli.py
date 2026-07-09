@@ -74,6 +74,76 @@ def receipts():
             click.echo(f"  Error: {e}")
 
 
+@cli.group()
+def ignore():
+    """Manage DB-tracked ignore-strings (flag SAAS/vendor charges).
+
+    Bank transactions whose text matches an ACTIVE pattern are flagged
+    (``ignored=true``) at ingest so they never surface as reconcile candidates —
+    they are flagged, never deleted.
+    """
+    pass
+
+
+@ignore.command("add")
+@click.argument("pattern")
+@click.option("--label", default=None, help="Human-friendly vendor label")
+def ignore_add(pattern, label):
+    """Add an ignore PATTERN (idempotent). PATTERN is a SHORT stable substring."""
+    from .ingest.ignore import add_ignore_pattern
+
+    with get_db() as db:
+        row, created = add_ignore_pattern(db, pattern, label)
+        db.commit()
+        if created:
+            click.echo(f"Added ignore pattern #{row.id}: {row.pattern!r} ({row.label})")
+        else:
+            click.echo(
+                f"Ignore pattern already present #{row.id}: {row.pattern!r} "
+                f"({row.label}) — no change"
+            )
+
+
+@ignore.command("list")
+def ignore_list():
+    """List all ignore patterns (id / pattern / label / active)."""
+    from .db.models import IgnoreMemoPattern
+
+    with get_db() as db:
+        rows = db.query(IgnoreMemoPattern).order_by(IgnoreMemoPattern.id).all()
+        if not rows:
+            click.echo("No ignore patterns.")
+            return
+        for r in rows:
+            click.echo(
+                f"{r.id}\t{r.pattern!r}\t{r.label or ''}\tactive={r.active}"
+            )
+
+
+@ignore.command("seed")
+def ignore_seed():
+    """Seed the default SAAS/vendor ignore patterns (idempotent)."""
+    from .ingest.ignore import seed_default_patterns
+
+    with get_db() as db:
+        result = seed_default_patterns(db)
+        db.commit()
+    click.echo(
+        f"Seed complete: inserted={result['inserted']} existing={result['existing']}"
+    )
+
+
+@ignore.command("backfill")
+def ignore_backfill():
+    """Flag existing bank_transactions matching an active pattern (idempotent)."""
+    from .ingest.ignore import backfill_ignored
+
+    with get_db() as db:
+        flagged = backfill_ignored(db)
+        db.commit()
+    click.echo(f"Backfill complete: {flagged} bank_transactions newly flagged ignored.")
+
+
 @cli.command()
 @click.option("--ad-crm-id", required=True, help="CRM ad id (EspoCRM record id)")
 def match(ad_crm_id):
