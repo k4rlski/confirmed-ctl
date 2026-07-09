@@ -302,6 +302,20 @@ def confirm_ad():
                 except crm_client.CrmWriteDisabled:
                     # Gate flipped off between check and call — treat as disabled.
                     crm_write = "disabled"
+                except crm_client.CrmWriteError:
+                    # The UPDATE matched NO CRM row for this ad_crm_id (bad/stale
+                    # id) — the write never landed. Do NOT commit the Postgres
+                    # confirmation; roll back and return a controlled 502 so the
+                    # confirm can be retried once the id is corrected.
+                    logger.error(
+                        "CRM write-back matched no row for ad_crm_id=%s", ad_crm_id
+                    )
+                    db.rollback()
+                    return jsonify({
+                        "status": "crm_write_failed",
+                        "detail": "no CRM row matched ad_crm_id",
+                        "ad_crm_id": ad_crm_id,
+                    }), 502
                 except Exception:
                     # A live CRM UPDATE failure (pymysql error). Do NOT commit the
                     # Postgres confirmation — roll back and return a controlled 502
@@ -345,7 +359,36 @@ def confirm_ad():
             txn.confirmed_ad_crm_id = ad_crm_id
             txn.confirmed_at = confirmed_at
 
-        db.commit()
+        if crm_write == "written":
+            # Reverse-orphan guard: the CRM row is ALREADY marked Done. If the
+            # Postgres commit now fails we have a CRM write with no local record.
+            # Log CRITICAL with the written values so it can be reconciled, and
+            # return a controlled 500. Retry is safe: no AdConfirmation exists (so
+            # no 409) and the CRM re-write is idempotent (FOUND_ROWS => rowcount
+            # 1 on the unchanged row).
+            try:
+                db.commit()
+            except Exception:
+                logger.critical(
+                    "CRM written (statclearancenews=Done) but Postgres commit "
+                    "FAILED — reconcile ad_crm_id=%s (retry is idempotent/"
+                    "self-healing) trxstring=%r urlgmailadconfirm=%r "
+                    "datepaidnews=%r",
+                    ad_crm_id,
+                    trxstring,
+                    gmail_url,
+                    datepaid,
+                )
+                return jsonify({
+                    "status": "postgres_commit_failed_after_crm_write",
+                    "detail": (
+                        "CRM updated but local confirmation not saved; retry to "
+                        "reconcile"
+                    ),
+                    "ad_crm_id": ad_crm_id,
+                }), 500
+        else:
+            db.commit()
 
         # Store in RAG for future pattern learning (best-effort — never blocks confirm)
         if txn:

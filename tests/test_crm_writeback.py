@@ -14,6 +14,7 @@ replaced by in-memory fakes that record every statement / call. We assert:
 - the trxstring formatter emits the signed amount ('-$2,000.00' style) + a TAB.
 """
 
+import logging
 import re
 from contextlib import contextmanager
 from datetime import date
@@ -32,10 +33,16 @@ from confirmed_ctl.api import routes  # noqa: E402
 # Fakes
 # --------------------------------------------------------------------------- #
 class FakeCursor:
-    """Records executed (sql, params); usable as a context manager."""
+    """Records executed (sql, params); usable as a context manager.
 
-    def __init__(self):
+    ``rowcount`` mimics pymysql with ``CLIENT.FOUND_ROWS``: after the UPDATE it
+    reports MATCHED rows (default 1 = the id matched). Set to 0 to simulate a
+    bad/stale ad_crm_id that matches no CRM row.
+    """
+
+    def __init__(self, rowcount=1):
         self.executed = []
+        self.rowcount = rowcount
 
     def __enter__(self):
         return self
@@ -48,8 +55,8 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self):
-        self.cur = FakeCursor()
+    def __init__(self, rowcount=1):
+        self.cur = FakeCursor(rowcount=rowcount)
         self.committed = False
         self.closed = False
 
@@ -91,9 +98,10 @@ class _ConfQuery:
 class FakeSession:
     """Minimal session covering the /confirm code path."""
 
-    def __init__(self, txn=None, existing=None):
+    def __init__(self, txn=None, existing=None, commit_raises=False):
         self._txn = txn
         self._existing = existing
+        self._commit_raises = commit_raises
         self.added = []
         self.committed = False
         self.rolled_back = False
@@ -108,6 +116,8 @@ class FakeSession:
         self.added.append(obj)
 
     def commit(self):
+        if self._commit_raises:
+            raise RuntimeError("psycopg2: could not commit (connection lost)")
         self.committed = True
 
     def rollback(self):
@@ -173,7 +183,7 @@ def test_update_ad_clearance_single_allowlisted_update(monkeypatch):
     monkeypatch.setattr(crm.settings, "CRM_WRITE_ENABLED", True)
     _configure_crm_db(monkeypatch)
     conn = FakeConn()
-    monkeypatch.setattr(crm, "_connect", lambda: conn)
+    monkeypatch.setattr(crm, "_connect_write", lambda: conn)
 
     crm.update_ad_clearance(
         ad_crm_id="6a343d2127bb55b5a",
@@ -230,7 +240,7 @@ def test_update_ad_clearance_empty_date_binds_null(monkeypatch):
     monkeypatch.setattr(crm.settings, "CRM_WRITE_ENABLED", True)
     _configure_crm_db(monkeypatch)
     conn = FakeConn()
-    monkeypatch.setattr(crm, "_connect", lambda: conn)
+    monkeypatch.setattr(crm, "_connect_write", lambda: conn)
 
     crm.update_ad_clearance("REC1", "memo\t-$1.00", "", datepaid="")
     _sql, params = conn.cur.executed[0]
@@ -356,3 +366,144 @@ def test_confirm_enabled_no_txn_skips_write(client, monkeypatch):
     data = resp.get_json()
     assert data["crm_write"] == "skipped_no_txn"
     assert session.committed is True
+
+
+# --------------------------------------------------------------------------- #
+# SHOULD-FIX #2 — rowcount / FOUND_ROWS
+# --------------------------------------------------------------------------- #
+def test_update_ad_clearance_rowcount_zero_raises_crm_write_error(monkeypatch):
+    """rowcount==0 (no CRM row matched the id) -> CrmWriteError, no false success.
+
+    The connection still commits (the UPDATE ran), but because FOUND_ROWS makes
+    rowcount reflect MATCHED rows, 0 means the id does not exist.
+    """
+    monkeypatch.setattr(crm.settings, "CRM_WRITE_ENABLED", True)
+    _configure_crm_db(monkeypatch)
+    conn = FakeConn(rowcount=0)
+    monkeypatch.setattr(crm, "_connect_write", lambda: conn)
+
+    with pytest.raises(crm.CrmWriteError):
+        crm.update_ad_clearance(
+            ad_crm_id="does-not-exist",
+            trxstring="memo\t-$1.00",
+            urlgmailadconfirm="",
+            datepaid=date(2026, 6, 26),
+        )
+    # The UPDATE was issued and committed; only the rowcount check failed it.
+    assert len(conn.cur.executed) == 1
+    assert conn.committed is True
+
+
+def test_update_ad_clearance_uses_found_rows_client_flag(monkeypatch):
+    """The write connection MUST be opened with client_flag=CLIENT.FOUND_ROWS.
+
+    Assert on the kwargs passed to pymysql.connect by the real _connect_write.
+    """
+    import pymysql
+    from pymysql.constants import CLIENT
+
+    _configure_crm_db(monkeypatch)
+    captured = {}
+
+    def _fake_connect(**kwargs):
+        captured.update(kwargs)
+        return FakeConn(rowcount=1)
+
+    monkeypatch.setattr(pymysql, "connect", _fake_connect)
+
+    conn = crm._connect_write()
+    assert isinstance(conn, FakeConn)
+    assert "client_flag" in captured
+    assert captured["client_flag"] & CLIENT.FOUND_ROWS == CLIENT.FOUND_ROWS
+
+
+def test_update_ad_clearance_rejects_empty_ad_crm_id(monkeypatch):
+    """Empty/None ad_crm_id -> raise before any connection/UPDATE."""
+    monkeypatch.setattr(crm.settings, "CRM_WRITE_ENABLED", True)
+    _configure_crm_db(monkeypatch)
+
+    def _boom():  # pragma: no cover - must never be called
+        raise AssertionError("must not connect with an empty ad_crm_id")
+
+    monkeypatch.setattr(crm, "_connect_write", _boom)
+
+    for bad in ("", None):
+        with pytest.raises(crm.CrmWriteError):
+            crm.update_ad_clearance(
+                ad_crm_id=bad,
+                trxstring="memo\t-$1.00",
+                urlgmailadconfirm="",
+                datepaid=date(2026, 6, 26),
+            )
+
+
+def test_confirm_crm_write_error_returns_502_no_postgres(client, monkeypatch):
+    """/confirm: CrmWriteError (0 rows matched) -> 502, Postgres NOT committed."""
+    monkeypatch.setattr(routes.settings, "CRM_WRITE_ENABLED", True)
+    monkeypatch.setattr(routes, "store_confirmed_match", lambda **kw: None)
+    session = FakeSession(txn=_txn(), existing=None)
+    _patch_db(monkeypatch, session)
+
+    def _no_row(**kwargs):
+        raise crm.CrmWriteError("no CRM row matched ad_crm_id")
+
+    monkeypatch.setattr(routes.crm_client, "update_ad_clearance", _no_row)
+
+    resp = client.post("/confirmed-ctl/confirm", json=_confirm_body())
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["status"] == "crm_write_failed"
+    assert body["detail"] == "no CRM row matched ad_crm_id"
+    assert body["ad_crm_id"] == "6a343d2127bb55b5a"
+    # No confirmation persisted; session rolled back.
+    assert session.committed is False
+    assert session.rolled_back is True
+    assert not any(isinstance(o, AdConfirmation) for o in session.added)
+
+
+# --------------------------------------------------------------------------- #
+# SHOULD-FIX #1 — reverse orphan (CRM written, Postgres commit fails)
+# --------------------------------------------------------------------------- #
+def test_confirm_postgres_commit_fails_after_crm_write(client, monkeypatch, caplog):
+    """CRM write ok but db.commit() raises -> controlled 500 + CRITICAL log.
+
+    No AdConfirmation persists (commit failed); the reconcile log carries the
+    written ad_crm_id so it can be self-healed by an idempotent retry.
+    """
+    monkeypatch.setattr(routes.settings, "CRM_WRITE_ENABLED", True)
+    monkeypatch.setattr(routes, "store_confirmed_match", lambda **kw: None)
+    session = FakeSession(txn=_txn(), existing=None, commit_raises=True)
+    _patch_db(monkeypatch, session)
+
+    monkeypatch.setattr(routes.crm_client, "update_ad_clearance", lambda **kw: None)
+
+    with caplog.at_level(logging.CRITICAL):
+        resp = client.post("/confirmed-ctl/confirm", json=_confirm_body())
+
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert body["status"] == "postgres_commit_failed_after_crm_write"
+    assert body["ad_crm_id"] == "6a343d2127bb55b5a"
+    # CRITICAL reconcile log emitted, naming the ad_crm_id.
+    critical = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert critical
+    assert any("6a343d2127bb55b5a" in r.getMessage() for r in critical)
+    assert any("commit FAILED" in r.getMessage() for r in critical)
+    # commit_raises means committed never flips true; no confirmation persisted.
+    assert session.committed is False
+
+
+# --------------------------------------------------------------------------- #
+# NIT — _build_trxstring tolerates a missing txn_date
+# --------------------------------------------------------------------------- #
+def test_build_trxstring_none_date_no_crash():
+    """None txn_date -> sensible trxstring without the 'ON MM/DD' part, no crash."""
+    txn = _txn()
+    txn.txn_date = None
+    trx = routes._build_trxstring(txn)
+    # Still one TAB + signed amount; the date fragment is simply omitted.
+    assert trx.count("\t") == 1
+    memo, amount = trx.split("\t")
+    assert amount == "-$2,226.94"
+    assert "ON " not in memo
+    assert memo == "PURCH W/O PIN LA TIMES MEDIA GR Debit"

@@ -40,6 +40,25 @@ class CrmWriteDisabled(RuntimeError):
     guarantees NO UPDATE was issued to the live CRM.
     """
 
+
+class CrmWriteError(RuntimeError):
+    """Raised by :func:`update_ad_clearance` when the write cannot be trusted.
+
+    Two cases:
+
+    - **No matching row** — the UPDATE committed but ``cursor.rowcount`` was 0,
+      meaning NO ``t_e_s_t_p_e_r_m`` row matched ``ad_crm_id`` (bad/stale id). We
+      open the write connection with ``CLIENT.FOUND_ROWS`` so rowcount reflects
+      MATCHED (not CHANGED) rows — a re-write of identical values still counts as
+      1. rowcount==0 therefore unambiguously means "no such id", never "value
+      unchanged".
+    - **Invalid input** — an empty/``None`` ``ad_crm_id`` (this write is the last
+      line of defense; we never issue an UPDATE without a real id).
+
+    Callers (``/confirm``) map this to a 502 and MUST NOT commit the local
+    Postgres confirmation, so the confirm stays cleanly retryable.
+    """
+
 # ---------------------------------------------------------------------------
 # SQL — the ABCF-X clearances query is reused VERBATIM. The SELECT column list
 # and FROM/JOIN are shared so ``get_ad`` returns the exact same shape as a single
@@ -118,6 +137,32 @@ def _connect():
         cursorclass=pymysql.cursors.DictCursor,
         connect_timeout=10,
         read_timeout=60,
+    )
+
+
+def _connect_write():
+    """Open the CRM connection used by :func:`update_ad_clearance`.
+
+    Identical to :func:`_connect` EXCEPT it sets ``client_flag=CLIENT.FOUND_ROWS``
+    so ``cursor.rowcount`` after the UPDATE reflects MATCHED rows rather than
+    CHANGED rows. This is critical for idempotent re-writes: without FOUND_ROWS,
+    re-writing the SAME values (backfill/retry) returns rowcount=0 and would look
+    like a failure. With it, rowcount==1 whenever the id matches (even if values
+    are unchanged) and rowcount==0 ONLY when no row matches the id.
+    """
+    import pymysql
+    from pymysql.constants import CLIENT
+
+    return pymysql.connect(
+        host=settings.CRM_DB_HOST,
+        port=settings.CRM_DB_PORT,
+        user=settings.CRM_DB_USER,
+        password=settings.CRM_DB_PASS,
+        database=settings.CRM_DB_NAME,
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=10,
+        read_timeout=60,
+        client_flag=CLIENT.FOUND_ROWS,
     )
 
 
@@ -210,6 +255,17 @@ def update_ad_clearance(
     :class:`CrmWriteDisabled` BEFORE opening any connection, so dev/test never
     touches the live CRM.
 
+    VALIDATED: an empty/``None`` ``ad_crm_id`` raises :class:`CrmWriteError`
+    BEFORE any connection is opened — this write is the last line of defense and
+    must never issue an UPDATE without a real id.
+
+    VERIFIED: the write connection is opened with ``CLIENT.FOUND_ROWS`` and after
+    commit ``cursor.rowcount`` is checked. rowcount==0 means NO row matched
+    ``ad_crm_id`` (the id is bad/stale) — this raises :class:`CrmWriteError`
+    WITHOUT reporting success, so the caller does not persist a confirmation for a
+    write that never landed. rowcount>=1 (a match, even with unchanged values) is
+    success.
+
     ``datepaid`` may be a :class:`datetime.date` (formatted ``YYYY-MM-DD``) or an
     already-formatted string (passed through); ``None`` binds SQL ``NULL``.
     """
@@ -219,6 +275,12 @@ def update_ad_clearance(
             "(fang only) to enable update_ad_clearance."
         )
 
+    if not ad_crm_id:
+        raise CrmWriteError(
+            "update_ad_clearance requires a non-empty ad_crm_id; refusing to "
+            "issue an UPDATE without a target CRM record id."
+        )
+
     if isinstance(datepaid, date):
         datepaid_value: str | None = datepaid.strftime("%Y-%m-%d")
     elif datepaid is None or datepaid == "":
@@ -226,7 +288,7 @@ def update_ad_clearance(
     else:
         datepaid_value = str(datepaid)
 
-    conn = _connect()
+    conn = _connect_write()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -239,6 +301,15 @@ def update_ad_clearance(
                     ad_crm_id,
                 ),
             )
+            matched = cur.rowcount
         conn.commit()
     finally:
         conn.close()
+
+    # FOUND_ROWS => rowcount reflects MATCHED rows. 0 means no CRM row has this
+    # id, so the write never landed — surface it instead of a false success.
+    if matched == 0:
+        raise CrmWriteError(
+            f"CRM write matched no row for ad_crm_id={ad_crm_id!r}; the id does "
+            "not exist in t_e_s_t_p_e_r_m (nothing was updated)."
+        )
