@@ -88,6 +88,14 @@ GMAIL_IMPERSONATE = _get("GMAIL_IMPERSONATE", "karl@perm-ads.com")
 # Default lookback window (days) for the BofA transaction-alert email scan.
 EMAIL_SCAN_LOOKBACK_DAYS = int(_get("EMAIL_SCAN_LOOKBACK_DAYS", "2"))
 
+# Candidate-matching window (days) for the scorer (matching/scorer.py). Bank
+# charges can post before OR after the CRM buy/charge date, so the window spans
+# ``[charge_date - LOOKBACK, charge_date + LOOKAHEAD]``. Defaults are wider (10/10)
+# than the old hardcoded 5/2 so a charge that posts a week+ off the expected date
+# still surfaces as a candidate. Both are env-overridable with a robust int parse.
+MATCH_LOOKBACK_DAYS = _get_int("CONFIRMED_CTL_MATCH_LOOKBACK_DAYS", 10)
+MATCH_LOOKAHEAD_DAYS = _get_int("CONFIRMED_CTL_MATCH_LOOKAHEAD_DAYS", 10)
+
 # Receipts + RAG storage
 RECEIPTS_BASE_PATH = _get("RECEIPTS_BASE_PATH", "/mnt/receipts")
 CHROMA_PATH = _get("CHROMA_PATH", "/opt/confirmed-ctl/chroma_db")

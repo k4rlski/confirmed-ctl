@@ -88,6 +88,17 @@ class CrmAd:
     run_end: date | None = None
     status_news: str | None = None
     owner: str | None = None
+    # Additional ABCF-X contract columns surfaced for the reconcile page.
+    # ``approved_date`` is the ad approval date (``adsapproveddate``);
+    # ``buy_date`` is ``datebuynews`` exposed distinctly from
+    # ``expected_charge_date`` (which falls back to the run start when buy is
+    # NULL). ``beneficiary_last`` is ``beneficiarylast``. ``clearance_status`` is
+    # the raw EspoCRM ``statclearancenews`` enum string (e.g. ``'["Confirmed"]'``)
+    # passed through as-is.
+    approved_date: date | None = None
+    buy_date: date | None = None
+    beneficiary_last: str | None = None
+    clearance_status: str | None = None
 
 
 class BankTransaction(Base):
@@ -106,8 +117,14 @@ class BankTransaction(Base):
     implemented by ``confirmed_ctl.ingest.dedup.deterministic_source_txn_id``:
 
     - **OFX** (``export-ofx``) → the statement ``<FITID>``.
-    - **email/CSV** (``email-scan`` / ``export-csv``) → a hex SHA-256 hash of the
-      normalized natural key ``(source, posted_date, amount, description, last4)``.
+    - **email-scan** (``email-scan``) → the Gmail message-id (with a
+      ``:block_index`` suffix for each line item of a batched alert), NOT the
+      natural-key hash.
+    - **CSV** (``export-csv``) → a hex SHA-256 hash of the normalized natural key
+      ``(source, posted_date, amount, description, last4)``, plus a per-row
+      disambiguator (line-sequence index / running balance) so two genuinely
+      distinct same-day/same-amount CSV rows do not collapse. The natural-key
+      hash is used ONLY for export-csv.
 
     ``confirmed_ad_crm_id`` is a LOGICAL pointer at the confirmed CRM ad (the
     EspoCRM record id). It is a plain indexed column with NO foreign key — the ad

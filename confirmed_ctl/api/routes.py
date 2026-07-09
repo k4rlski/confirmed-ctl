@@ -24,11 +24,50 @@ from ..db.models import AdConfirmation, BankTransaction, CrmAd, SyncLog
 from ..db.session import get_db
 from ..gmail.client import search_threads_by_ad_number
 from ..matching.rag import store_confirmed_match
-from ..matching.scorer import get_candidate_transactions
+from ..matching.scorer import get_candidate_transactions, get_excluded_transactions
 
 logger = logging.getLogger(__name__)
 
 confirmed_ctl_bp = Blueprint("confirmed_ctl", __name__, url_prefix="/confirmed-ctl")
+
+
+def _crm_ad_to_dict(ad: CrmAd) -> dict:
+    """Serialize a :class:`CrmAd` to the JSON contract shared by the endpoints.
+
+    Dates are ``str()``/``None``; strings are None-safe. ``status_news`` and
+    ``clearance_status`` are raw EspoCRM enum strings passed through as-is. This
+    mirrors the inline serialization used by ``/unconfirmed`` and ``/candidates``
+    (kept identical key-for-key) and is the base payload for ``/reconciled``.
+    """
+    return {
+        "crm_id": ad.crm_id,
+        "ad_number": ad.ad_number,
+        "client_name": ad.client_name,
+        "newspaper_name": ad.newspaper_name,
+        "run_date": str(ad.run_date) if ad.run_date else None,
+        "expected_charge_date": (
+            str(ad.expected_charge_date) if ad.expected_charge_date else None
+        ),
+        "expected_amount": (
+            float(ad.expected_amount) if ad.expected_amount is not None else None
+        ),
+        "case_number": str(ad.case_number) if ad.case_number is not None else None,
+        "state": str(ad.state) if ad.state is not None else None,
+        "attorney": str(ad.attorney) if ad.attorney is not None else None,
+        "entity": str(ad.entity) if ad.entity is not None else None,
+        "job_title": str(ad.job_title) if ad.job_title is not None else None,
+        "run_end": str(ad.run_end) if ad.run_end else None,
+        "status_news": str(ad.status_news) if ad.status_news is not None else None,
+        "owner": str(ad.owner) if ad.owner is not None else None,
+        "approved_date": str(ad.approved_date) if ad.approved_date else None,
+        "buy_date": str(ad.buy_date) if ad.buy_date else None,
+        "beneficiary_last": (
+            str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
+        ),
+        "clearance_status": (
+            str(ad.clearance_status) if ad.clearance_status is not None else None
+        ),
+    }
 
 
 def _lookup_crm_ad(ad_crm_id: str) -> CrmAd | None:
@@ -206,6 +245,18 @@ def get_candidates(ad_crm_id: str):
         # Bank transaction candidates (ranked)
         candidates = get_candidate_transactions(db, ad)
 
+        # Near-miss bank txns EXCLUDED from the candidate set (bounded <=10):
+        # plausible by amount but out-of-window or already matched. Surfaced so
+        # operators can spot e.g. a second identical charge just outside the
+        # window. Best-effort — never blocks the popup.
+        try:
+            excluded = get_excluded_transactions(db, ad)
+        except Exception:
+            logger.exception(
+                "excluded-txn lookup failed for ad_crm_id=%s", ad_crm_id
+            )
+            excluded = []
+
         # Gmail threads. Blank ad number => a distinguishable "note" (we did NOT
         # search); a real search failure => a surfaced "gmail_error" (we do NOT
         # silently pretend there were no results). Otherwise the ranked thread
@@ -258,6 +309,17 @@ def get_candidates(ad_crm_id: str):
                 "run_end": str(ad.run_end) if ad.run_end else None,
                 "status_news": str(ad.status_news) if ad.status_news is not None else None,
                 "owner": str(ad.owner) if ad.owner is not None else None,
+                # Additional ABCF-X contract columns. approved_date/buy_date are
+                # dates; beneficiary_last is a None-safe string; clearance_status
+                # is the raw statclearancenews enum string passed through as-is.
+                "approved_date": str(ad.approved_date) if ad.approved_date else None,
+                "buy_date": str(ad.buy_date) if ad.buy_date else None,
+                "beneficiary_last": (
+                    str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
+                ),
+                "clearance_status": (
+                    str(ad.clearance_status) if ad.clearance_status is not None else None
+                ),
             },
             "bank_candidates": [
                 {
@@ -278,6 +340,7 @@ def get_candidates(ad_crm_id: str):
             "gmail_threads": gmail_threads,
             "gmail_error": gmail_error,
             "gmail_note": gmail_note,
+            "excluded": excluded,
         })
 
 
@@ -527,7 +590,109 @@ def list_unconfirmed():
                 "run_end": str(ad.run_end) if ad.run_end else None,
                 "status_news": str(ad.status_news) if ad.status_news is not None else None,
                 "owner": str(ad.owner) if ad.owner is not None else None,
+                # Additional ABCF-X contract columns. approved_date/buy_date are
+                # dates; beneficiary_last is a None-safe string; clearance_status
+                # is the raw statclearancenews enum string passed through as-is.
+                "approved_date": str(ad.approved_date) if ad.approved_date else None,
+                "buy_date": str(ad.buy_date) if ad.buy_date else None,
+                "beneficiary_last": (
+                    str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
+                ),
+                "clearance_status": (
+                    str(ad.clearance_status) if ad.clearance_status is not None else None
+                ),
             }
             for ad in unconfirmed
         ],
     })
+
+
+@confirmed_ctl_bp.route("/reconciled", methods=["GET"])
+def list_reconciled():
+    """
+    Returns ads this tool has already reconciled (marked clearance Done), with
+    the bank txn + Gmail info it mapped, for the reconcile page's "done" view.
+
+    Reads the Done ads from the MariaDB CRM via the read-only adapter
+    (``crm.client.list_reconciled`` — the ABCF-X query with
+    ``statclearancenews='["Done"]'``) and JOINs each to its Postgres
+    ``ad_confirmations`` row (by ``ad_crm_id`` = ``CrmAd.crm_id``). Only ads that
+    HAVE an ``ad_confirmations`` row (i.e. actually reconciled by THIS tool) are
+    returned. Each includes the mapped bank amount + txn date (via
+    ``ad_confirmations.bank_txn_id`` -> ``bank_transactions``), ``gmail_thread_id``,
+    a ``gmail_url`` (authuser ``#all`` form), and ``confirmed_at``. Ordered by
+    ``confirmed_at`` DESC. None-safe throughout.
+    """
+    if not crm_client.is_configured():
+        return jsonify({
+            "status": "crm_not_configured",
+            "detail": (
+                "CRM not configured: set CRM_DB_HOST (and CRM_DB_USER/PASS/NAME) "
+                "to enable the read-only permtrak2_crm.t_e_s_t_p_e_r_m adapter."
+            ),
+        }), 503
+
+    try:
+        reconciled_ads = crm_client.list_reconciled()
+    except Exception:
+        # Same controlled-failure contract as /unconfirmed & /candidates.
+        logger.exception("CRM list_reconciled failed")
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+        }), 502
+
+    crm_ids = [ad.crm_id for ad in reconciled_ads if ad.crm_id]
+
+    ads_out: list[dict] = []
+    with get_db() as db:
+        # Map ad_crm_id -> its confirmation row (only ads reconciled by us).
+        conf_by_id: dict[str, AdConfirmation] = {}
+        if crm_ids:
+            for conf in (
+                db.query(AdConfirmation)
+                .filter(AdConfirmation.ad_crm_id.in_(crm_ids))
+                .all()
+            ):
+                conf_by_id[conf.ad_crm_id] = conf
+
+        # Map bank_txn_id -> bank txn for the mapped amount + date.
+        txn_ids = [c.bank_txn_id for c in conf_by_id.values() if c.bank_txn_id]
+        txn_by_id: dict[int, BankTransaction] = {}
+        if txn_ids:
+            for txn in (
+                db.query(BankTransaction)
+                .filter(BankTransaction.id.in_(txn_ids))
+                .all()
+            ):
+                txn_by_id[txn.id] = txn
+
+        for ad in reconciled_ads:
+            conf = conf_by_id.get(ad.crm_id) if ad.crm_id else None
+            if conf is None:
+                # Not reconciled by this tool (no local confirmation) — skip.
+                continue
+            txn = txn_by_id.get(conf.bank_txn_id) if conf.bank_txn_id else None
+            item = _crm_ad_to_dict(ad)
+            item.update({
+                "bank_amount": (
+                    float(txn.total_amount)
+                    if txn is not None and txn.total_amount is not None
+                    else None
+                ),
+                "bank_txn_date": (
+                    str(txn.txn_date) if txn is not None and txn.txn_date else None
+                ),
+                "gmail_thread_id": conf.gmail_thread_id,
+                "gmail_url": _build_gmail_url(ad.ad_number, conf.gmail_thread_id),
+                "confirmed_at": (
+                    conf.confirmed_at.isoformat() if conf.confirmed_at else None
+                ),
+            })
+            ads_out.append(item)
+
+    # Order by confirmed_at DESC. Sorting on the ISO string avoids naive/aware
+    # datetime comparison issues; missing timestamps sort last.
+    ads_out.sort(key=lambda d: d.get("confirmed_at") or "", reverse=True)
+
+    return jsonify({"count": len(ads_out), "ads": ads_out})

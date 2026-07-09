@@ -2,15 +2,18 @@ from datetime import date
 
 import pytest
 
+from confirmed_ctl import settings
 from confirmed_ctl.db.models import BankTransaction, CrmAd
 from confirmed_ctl.matching.scorer import (
     CC_FEE_MULTIPLIER,
+    _amount_matches_ccfee,
     _score_amount,
     _score_amount_ccfee,
     _score_candidate,
     _score_date,
     _score_vendor,
     get_candidate_transactions,
+    get_excluded_transactions,
 )
 
 
@@ -143,3 +146,162 @@ def test_get_candidates_returns_empty_when_ad_has_no_dates():
     )
     # db is never touched because the guard returns before any query.
     assert get_candidate_transactions(db=None, ad=ad) == []
+
+
+# --------------------------------------------------------------------------- #
+# Configurable candidate window
+# --------------------------------------------------------------------------- #
+class _RecordingQuery:
+    """Captures the filter/order_by criteria; returns the canned rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.filters: list = []
+
+    def filter(self, *criteria):
+        self.filters.extend(criteria)
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _RecordingSession:
+    def __init__(self, rows):
+        self._rows = rows
+        self.last_query: _RecordingQuery | None = None
+
+    def query(self, *args, **kwargs):
+        self.last_query = _RecordingQuery(self._rows)
+        return self.last_query
+
+
+def _txn_date_bounds(query):
+    """Extract the txn_date >= / <= bind values from captured filter criteria."""
+    bounds: dict[str, date] = {}
+    for crit in query.filters:
+        left = getattr(crit, "left", None)
+        right = getattr(crit, "right", None)
+        op = getattr(getattr(crit, "operator", None), "__name__", None)
+        if left is None or right is None or op is None:
+            continue
+        if getattr(left, "key", None) == "txn_date":
+            bounds[op] = right.value
+    return bounds
+
+
+def test_configurable_window_default_from_settings(monkeypatch):
+    # With no explicit window, the scorer uses the configurable settings
+    # (wider 10/10 defaults) for [charge_date - lookback, charge_date + lookahead].
+    monkeypatch.setattr(settings, "MATCH_LOOKBACK_DAYS", 10)
+    monkeypatch.setattr(settings, "MATCH_LOOKAHEAD_DAYS", 10)
+    session = _RecordingSession(rows=[])
+    ad = _ad(100.0, "Los Angeles Times", date(2026, 6, 17))
+
+    get_candidate_transactions(session, ad)
+
+    bounds = _txn_date_bounds(session.last_query)
+    assert bounds["ge"] == date(2026, 6, 7)   # charge_date - 10
+    assert bounds["le"] == date(2026, 6, 27)  # charge_date + 10
+
+
+def test_configurable_window_env_override_widens(monkeypatch):
+    # A wider env-configured window is honored.
+    monkeypatch.setattr(settings, "MATCH_LOOKBACK_DAYS", 14)
+    monkeypatch.setattr(settings, "MATCH_LOOKAHEAD_DAYS", 21)
+    session = _RecordingSession(rows=[])
+    ad = _ad(100.0, "Los Angeles Times", date(2026, 6, 17))
+
+    get_candidate_transactions(session, ad)
+
+    bounds = _txn_date_bounds(session.last_query)
+    assert bounds["ge"] == date(2026, 6, 3)    # charge_date - 14
+    assert bounds["le"] == date(2026, 7, 8)    # charge_date + 21
+
+
+def test_explicit_window_args_override_settings(monkeypatch):
+    monkeypatch.setattr(settings, "MATCH_LOOKBACK_DAYS", 10)
+    monkeypatch.setattr(settings, "MATCH_LOOKAHEAD_DAYS", 10)
+    session = _RecordingSession(rows=[])
+    ad = _ad(100.0, "Los Angeles Times", date(2026, 6, 17))
+
+    get_candidate_transactions(session, ad, lookback_days=3, lookahead_days=1)
+
+    bounds = _txn_date_bounds(session.last_query)
+    assert bounds["ge"] == date(2026, 6, 14)   # charge_date - 3
+    assert bounds["le"] == date(2026, 6, 18)   # charge_date + 1
+
+
+# --------------------------------------------------------------------------- #
+# Excluded near-miss reasons
+# --------------------------------------------------------------------------- #
+def _bank_txn(txn_id, amount, txn_date, *, confirmed=None):
+    return BankTransaction(
+        id=txn_id,
+        source="email-scan",
+        source_txn_id=f"tx-{txn_id}",
+        txn_date=txn_date,
+        total_amount=amount,
+        vendor_name="LA TIMES",
+        confirmed_ad_crm_id=confirmed,
+    )
+
+
+def test_amount_matches_ccfee_boolean():
+    assert _amount_matches_ccfee(2000.0, 2000.0) is True
+    # Debit stored negative still matches by magnitude.
+    assert _amount_matches_ccfee(-2000.0, 2000.0) is True
+    # CC-fee grossed-up amount matches.
+    assert _amount_matches_ccfee(2000.0 * CC_FEE_MULTIPLIER, 2000.0) is True
+    assert _amount_matches_ccfee(999.0, 2000.0) is False
+    assert _amount_matches_ccfee(2000.0, None) is False
+
+
+def test_excluded_reasons_out_of_window_and_already_matched(monkeypatch):
+    monkeypatch.setattr(settings, "MATCH_LOOKBACK_DAYS", 10)
+    monkeypatch.setattr(settings, "MATCH_LOOKAHEAD_DAYS", 10)
+    charge = date(2026, 6, 17)  # window [06-07, 06-27]
+    rows = [
+        # Plausible by amount, OUT of window, unmatched -> out_of_window.
+        _bank_txn(1, -2000.0, date(2026, 7, 15)),
+        # Plausible by amount, IN window, already matched -> already_matched.
+        _bank_txn(2, -2000.0, date(2026, 6, 17), confirmed="RECX"),
+        # Plausible by amount, IN window, unmatched -> IS a candidate (skipped).
+        _bank_txn(3, -2000.0, date(2026, 6, 18)),
+        # Amount does NOT match -> skipped entirely.
+        _bank_txn(4, -55.0, date(2026, 7, 20)),
+    ]
+    session = _RecordingSession(rows=rows)
+    ad = _ad(2000.0, "Los Angeles Times", charge)
+
+    excluded = get_excluded_transactions(session, ad)
+
+    by_id = {e["txn_id"]: e for e in excluded}
+    assert by_id[1]["reason"] == "out_of_window"
+    assert by_id[1]["txn_date"] == "2026-07-15"
+    assert by_id[2]["reason"] == "already_matched"
+    # The in-window unmatched candidate and the amount mismatch are NOT excluded.
+    assert 3 not in by_id
+    assert 4 not in by_id
+
+
+def test_excluded_is_bounded(monkeypatch):
+    monkeypatch.setattr(settings, "MATCH_LOOKBACK_DAYS", 10)
+    monkeypatch.setattr(settings, "MATCH_LOOKAHEAD_DAYS", 10)
+    charge = date(2026, 6, 17)
+    # 25 plausible out-of-window rows; result must be capped at the limit (10).
+    rows = [_bank_txn(i, -2000.0, date(2026, 8, 1)) for i in range(25)]
+    session = _RecordingSession(rows=rows)
+    ad = _ad(2000.0, "Los Angeles Times", charge)
+
+    excluded = get_excluded_transactions(session, ad)
+    assert len(excluded) == 10
+
+
+def test_excluded_empty_when_no_expected_amount(monkeypatch):
+    session = _RecordingSession(rows=[_bank_txn(1, -2000.0, date(2026, 7, 15))])
+    ad = _ad(None, "Los Angeles Times", date(2026, 6, 17))
+    assert get_excluded_transactions(session, ad) == []

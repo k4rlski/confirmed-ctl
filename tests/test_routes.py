@@ -6,14 +6,18 @@ configured/unconfigured/not-found branches and the unconfirmed set-subtraction.
 """
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
 flask = pytest.importorskip("flask")
 
 from confirmed_ctl.api import routes  # noqa: E402
-from confirmed_ctl.db.models import BankTransaction, CrmAd  # noqa: E402
+from confirmed_ctl.db.models import (  # noqa: E402
+    AdConfirmation,
+    BankTransaction,
+    CrmAd,
+)
 
 
 @pytest.fixture
@@ -85,6 +89,10 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
         run_end=date(2026, 6, 20),
         status_news='["Active"]',
         owner="karl",
+        approved_date=date(2026, 6, 1),
+        buy_date=date(2026, 6, 17),
+        beneficiary_last="Doe",
+        clearance_status='["Confirmed"]',
     )
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(
@@ -131,6 +139,13 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     assert data["ad"]["run_end"] == "2026-06-20"
     assert data["ad"]["status_news"] == '["Active"]'
     assert data["ad"]["owner"] == "karl"
+    # New ABCF-X contract columns exposed on the candidates ad.
+    assert data["ad"]["approved_date"] == "2026-06-01"
+    assert data["ad"]["buy_date"] == "2026-06-17"
+    assert data["ad"]["beneficiary_last"] == "Doe"
+    assert data["ad"]["clearance_status"] == '["Confirmed"]'
+    # The excluded near-miss array is always present (empty here).
+    assert data["excluded"] == []
     assert len(data["bank_candidates"]) == 1
     cand = data["bank_candidates"][0]
     assert cand["txn_id"] == 1
@@ -201,6 +216,11 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     assert ad_json["run_end"] is None
     assert ad_json["status_news"] is None
     assert ad_json["owner"] is None
+    # New ABCF-X contract columns also serialize as null when unset.
+    assert ad_json["approved_date"] is None
+    assert ad_json["buy_date"] is None
+    assert ad_json["beneficiary_last"] is None
+    assert ad_json["clearance_status"] is None
 
 
 def test_candidates_surfaces_gmail_error_on_failure(client, monkeypatch):
@@ -307,7 +327,9 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
               run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
               expected_amount=200.0, case_number="B-2026-0007", state="NY",
               attorney="John Atty", entity="PA", job_title="Engineer",
-              run_end=date(2026, 6, 10), status_news='["Active"]', owner="karl"),
+              run_end=date(2026, 6, 10), status_news='["Active"]', owner="karl",
+              approved_date=date(2026, 6, 1), buy_date=date(2026, 6, 4),
+              beneficiary_last="Smith", clearance_status='["Confirmed"]'),
     ]
     monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
     # "A" is already confirmed in Postgres -> only "B" should remain.
@@ -330,6 +352,11 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
     assert ad_b["run_end"] == "2026-06-10"
     assert ad_b["status_news"] == '["Active"]'
     assert ad_b["owner"] == "karl"
+    # New ABCF-X contract columns exposed on the unconfirmed ads.
+    assert ad_b["approved_date"] == "2026-06-01"
+    assert ad_b["buy_date"] == "2026-06-04"
+    assert ad_b["beneficiary_last"] == "Smith"
+    assert ad_b["clearance_status"] == '["Confirmed"]'
 
 
 def test_unconfirmed_all_when_none_confirmed(client, monkeypatch):
@@ -345,3 +372,162 @@ def test_unconfirmed_all_when_none_confirmed(client, monkeypatch):
     data = resp.get_json()
     assert data["count"] == 2
     assert {a["crm_id"] for a in data["ads"]} == {"A", "B"}
+
+
+# --------------------------------------------------------------------------- #
+# /candidates — excluded near-miss array flows through
+# --------------------------------------------------------------------------- #
+def test_candidates_excluded_array_surfaced(client, monkeypatch):
+    _configure_crm(monkeypatch)
+    ad = CrmAd(crm_id="REC123", ad_number="IPR1", newspaper_name="Miami Herald",
+               run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
+               expected_amount=2000.0)
+    monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
+    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(routes, "search_threads_by_ad_number", lambda *a, **k: [])
+    excluded = [
+        {"txn_id": 9, "source": "email-scan", "source_txn_id": "x9",
+         "txn_date": "2026-07-15", "amount": -2000.0, "vendor_name": "LA TIMES",
+         "reason": "out_of_window"},
+    ]
+    monkeypatch.setattr(routes, "get_excluded_transactions", lambda db, ad: excluded)
+    _patch_db(monkeypatch, object())
+
+    resp = client.get("/confirmed-ctl/candidates/REC123")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["excluded"] == excluded
+    assert data["excluded"][0]["reason"] == "out_of_window"
+    assert data["excluded"][0]["txn_date"] == "2026-07-15"
+
+
+# --------------------------------------------------------------------------- #
+# /reconciled
+# --------------------------------------------------------------------------- #
+class _ReconciledQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _ReconciledSession:
+    """query(AdConfirmation) -> confs; query(BankTransaction) -> txns."""
+
+    def __init__(self, confs, txns):
+        self._confs = confs
+        self._txns = txns
+
+    def query(self, model, *args, **kwargs):
+        if model is AdConfirmation:
+            return _ReconciledQuery(self._confs)
+        if model is BankTransaction:
+            return _ReconciledQuery(self._txns)
+        return _ReconciledQuery([])
+
+
+def test_reconciled_503_when_crm_unconfigured(client, monkeypatch):
+    _configure_crm(monkeypatch, configured=False)
+    resp = client.get("/confirmed-ctl/reconciled")
+    assert resp.status_code == 503
+    assert resp.get_json()["status"] == "crm_not_configured"
+
+
+def test_reconciled_502_when_crm_errors(client, monkeypatch):
+    _configure_crm(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("pymysql: (2003) Can't connect")
+
+    monkeypatch.setattr(routes.crm_client, "list_reconciled", _boom)
+    resp = client.get("/confirmed-ctl/reconciled")
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["status"] == "crm_unavailable"
+    assert "pymysql" not in body["detail"]
+
+
+def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
+    _configure_crm(monkeypatch)
+    # Three Done ads from the CRM; only A and B were reconciled by this tool
+    # (have an ad_confirmations row). C must be excluded.
+    reconciled_ads = [
+        CrmAd(crm_id="A", ad_number="AD-A", newspaper_name="Miami Herald",
+              run_date=date(2026, 6, 1), expected_charge_date=date(2026, 6, 2),
+              expected_amount=100.0, clearance_status='["Done"]',
+              approved_date=date(2026, 5, 30), buy_date=date(2026, 6, 2),
+              beneficiary_last="Doe"),
+        CrmAd(crm_id="B", ad_number="AD-B", newspaper_name="Sun Sentinel",
+              run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
+              expected_amount=200.0, clearance_status='["Done"]'),
+        CrmAd(crm_id="C", ad_number="AD-C", expected_amount=300.0,
+              clearance_status='["Done"]'),
+    ]
+    monkeypatch.setattr(routes.crm_client, "list_reconciled", lambda: reconciled_ads)
+
+    # A confirmed earlier than B -> B must come first (confirmed_at DESC).
+    conf_a = AdConfirmation(
+        ad_crm_id="A", ad_number="AD-A", bank_txn_id=11,
+        gmail_thread_id="thrA",
+        confirmed_at=datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc),
+    )
+    conf_b = AdConfirmation(
+        ad_crm_id="B", ad_number="AD-B", bank_txn_id=12,
+        gmail_thread_id="thrB",
+        confirmed_at=datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc),
+    )
+    txn_a = BankTransaction(id=11, source="email-scan", source_txn_id="a",
+                            txn_date=date(2026, 6, 2), total_amount=-100.0)
+    txn_b = BankTransaction(id=12, source="email-scan", source_txn_id="b",
+                            txn_date=date(2026, 6, 4), total_amount=-200.0)
+    _patch_db(monkeypatch, _ReconciledSession([conf_a, conf_b], [txn_a, txn_b]))
+
+    resp = client.get("/confirmed-ctl/reconciled")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    # Only A and B (C has no confirmation row) and ordered by confirmed_at DESC.
+    assert data["count"] == 2
+    assert [a["crm_id"] for a in data["ads"]] == ["B", "A"]
+
+    ad_a = next(a for a in data["ads"] if a["crm_id"] == "A")
+    # CrmAd contract fields (incl. the new ones) are present.
+    assert ad_a["ad_number"] == "AD-A"
+    assert ad_a["clearance_status"] == '["Done"]'
+    assert ad_a["approved_date"] == "2026-05-30"
+    assert ad_a["buy_date"] == "2026-06-02"
+    assert ad_a["beneficiary_last"] == "Doe"
+    # Mapped bank + gmail + confirmed_at info.
+    assert ad_a["bank_amount"] == -100.0
+    assert ad_a["bank_txn_date"] == "2026-06-02"
+    assert ad_a["gmail_thread_id"] == "thrA"
+    assert ad_a["gmail_url"].startswith("https://mail.google.com/mail/?authuser=")
+    assert ad_a["gmail_url"].endswith("#all/thrA")
+    assert ad_a["confirmed_at"].startswith("2026-06-05")
+
+
+def test_reconciled_none_safe_when_no_bank_txn(client, monkeypatch):
+    _configure_crm(monkeypatch)
+    reconciled_ads = [
+        CrmAd(crm_id="A", ad_number="AD-A", expected_amount=100.0,
+              clearance_status='["Done"]'),
+    ]
+    monkeypatch.setattr(routes.crm_client, "list_reconciled", lambda: reconciled_ads)
+    # Confirmation with no bank_txn_id and no gmail thread -> None-safe fields.
+    conf_a = AdConfirmation(ad_crm_id="A", ad_number="AD-A", bank_txn_id=None,
+                            gmail_thread_id=None, confirmed_at=None)
+    _patch_db(monkeypatch, _ReconciledSession([conf_a], []))
+
+    resp = client.get("/confirmed-ctl/reconciled")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["count"] == 1
+    ad = data["ads"][0]
+    assert ad["bank_amount"] is None
+    assert ad["bank_txn_date"] is None
+    assert ad["gmail_thread_id"] is None
+    assert ad["gmail_url"] == ""
+    assert ad["confirmed_at"] is None
