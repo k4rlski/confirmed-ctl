@@ -83,6 +83,18 @@ ORDER BY datebuynews DESC"""
 
 CLEARANCES_QUERY = f"{_SELECT_FROM}\n{_CLEARANCES_WHERE}"
 
+# The RECONCILED WHERE clause is IDENTICAL to the clearances WHERE except it
+# matches ``statclearancenews='["Done"]'`` (ads this tool has already marked
+# Done via the write-back) instead of ``'["Confirmed"]'``. Everything else
+# (statnews Active, entity JKT/PA, deleted=0, statpermcase Active Case, and the
+# ORDER BY datebuynews DESC) is kept verbatim so the shape matches list_clearances.
+_RECONCILED_WHERE = """WHERE statnews='["Active"]' AND (entity='JKT' OR entity='PA')
+  AND statclearancenews='["Done"]' AND t_e_s_t_p_e_r_m.deleted=0
+  AND t_e_s_t_p_e_r_m.statpermcase='["Active Case"]'
+ORDER BY datebuynews DESC"""
+
+RECONCILED_QUERY = f"{_SELECT_FROM}\n{_RECONCILED_WHERE}"
+
 # Single-ad lookup: same SELECT columns, parameterized by EspoCRM record id.
 # ``%s`` is bound by pymysql — NEVER string-interpolate ``ad_crm_id``.
 GET_AD_QUERY = f"{_SELECT_FROM}\nWHERE t_e_s_t_p_e_r_m.id=%s AND t_e_s_t_p_e_r_m.deleted=0"
@@ -192,6 +204,14 @@ def _row_to_crm_ad(row: dict) -> CrmAd:
         # through as-is; do NOT parse it here.
         status_news=row.get("statnews"),
         owner=row.get("owner"),
+        # Additional ABCF-X contract columns (already selected in _SELECT_FROM).
+        approved_date=row.get("adsapproveddate"),
+        # buy_date is datebuynews surfaced distinctly from expected_charge_date.
+        buy_date=row.get("datebuynews"),
+        beneficiary_last=row.get("beneficiarylast"),
+        # clearance_status is the raw EspoCRM statclearancenews enum string
+        # (e.g. '["Confirmed"]') — pass through as-is; do NOT parse it here.
+        clearance_status=row.get("statclearancenews"),
     )
 
 
@@ -207,6 +227,26 @@ def list_clearances() -> list[CrmAd]:
     try:
         with conn.cursor() as cur:
             cur.execute(CLEARANCES_QUERY)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [_row_to_crm_ad(r) for r in rows]
+
+
+def list_reconciled() -> list[CrmAd]:
+    """Return every reconciled (``statclearancenews='["Done"]'``) active JKT/PA
+    ad as a :class:`CrmAd`.
+
+    Runs the reconciled query verbatim (read-only) — identical to
+    :func:`list_clearances` except it matches the Done clearance status. Returns
+    an empty list when the CRM is not configured.
+    """
+    if not is_configured():
+        return []
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(RECONCILED_QUERY)
             rows = cur.fetchall()
     finally:
         conn.close()

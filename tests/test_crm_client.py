@@ -148,6 +148,13 @@ def test_list_clearances_query_verbatim_and_mapping(monkeypatch, configured):
     # status_news is the raw EspoCRM enum string, passed through as-is.
     assert ad.status_news == '["Active"]'
     assert ad.owner == "karl"
+    # Additional ABCF-X contract columns.
+    assert ad.approved_date == date(2026, 6, 1)
+    # buy_date is datebuynews surfaced distinctly from expected_charge_date.
+    assert ad.buy_date == date(2026, 6, 17)
+    assert ad.beneficiary_last == "Doe"
+    # clearance_status is the raw EspoCRM enum string, passed through as-is.
+    assert ad.clearance_status == '["Confirmed"]'
     assert conn.closed is True
 
 
@@ -206,6 +213,53 @@ def test_list_clearances_unconfigured_returns_empty(monkeypatch):
 
     monkeypatch.setattr(crm, "_connect", _boom)
     assert crm.list_clearances() == []
+
+
+# --------------------------------------------------------------------------- #
+# list_reconciled
+# --------------------------------------------------------------------------- #
+def test_list_reconciled_query_where_done_and_mapping(monkeypatch, configured):
+    conn = FakeConn([_sample_row(statclearancenews='["Done"]')])
+    monkeypatch.setattr(crm, "_connect", lambda: conn)
+
+    ads = crm.list_reconciled()
+
+    sql, params = conn.cursor_obj.executed[0]
+    assert sql == crm.RECONCILED_QUERY
+    assert params is None
+    # WHERE matches Done (not Confirmed); the rest of the WHERE is unchanged.
+    assert "statclearancenews='[\"Done\"]'" in sql
+    assert "statclearancenews='[\"Confirmed\"]'" not in sql
+    assert "statnews='[\"Active\"]'" in sql
+    assert "(entity='JKT' OR entity='PA')" in sql
+    assert "t_e_s_t_p_e_r_m.statpermcase='[\"Active Case\"]'" in sql
+    assert "t_e_s_t_p_e_r_m.deleted=0" in sql
+    assert "ORDER BY datebuynews DESC" in sql
+    # Same CrmAd shape (incl. the new contract fields).
+    assert len(ads) == 1
+    ad = ads[0]
+    assert isinstance(ad, CrmAd)
+    assert ad.crm_id == "REC123"
+    assert ad.clearance_status == '["Done"]'
+    assert ad.buy_date == date(2026, 6, 17)
+    assert conn.closed is True
+
+
+def test_list_reconciled_unconfigured_returns_empty(monkeypatch):
+    monkeypatch.setattr(crm.settings, "CRM_DB_HOST", "")
+
+    def _boom():  # pragma: no cover - must never be called
+        raise AssertionError("must not connect when unconfigured")
+
+    monkeypatch.setattr(crm, "_connect", _boom)
+    assert crm.list_reconciled() == []
+
+
+def test_reconciled_query_is_select_only():
+    write_re = re.compile(r"\b(INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|TRUNCATE)\b")
+    upper = crm.RECONCILED_QUERY.upper()
+    assert upper.lstrip().startswith("SELECT")
+    assert write_re.search(upper) is None
 
 
 # --------------------------------------------------------------------------- #
