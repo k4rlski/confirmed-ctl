@@ -1,23 +1,44 @@
 """confirmed_ctl/crm/client.py
 
-Read-only (SELECT-only) adapter into the MariaDB CRM ``permtrak2_crm`` on
-``permtrak.com``. Ad / case data lives ONLY in the CRM (see
-``confirmed_ctl/db/models.py``); this module reads it into lightweight
-:class:`~confirmed_ctl.db.models.CrmAd` read views and NEVER writes.
+Adapter into the MariaDB CRM ``permtrak2_crm`` on ``permtrak.com``. Ad / case
+data lives ONLY in the CRM (see ``confirmed_ctl/db/models.py``); the read side of
+this module reads it into lightweight
+:class:`~confirmed_ctl.db.models.CrmAd` read views.
 
 Connection pattern mirrors the mars-status reports helper: ``pymysql.connect``
 with a ``DictCursor``, ``connect_timeout=10`` and ``read_timeout=60``, driven by
-the ``CRM_DB_*`` settings. CRM write-back (statclearancenews -> '["Done"]',
-trxstring, urlgmailadconfirm, datepaidnews) is intentionally NOT implemented
-here — it is a separate later generation.
+the ``CRM_DB_*`` settings.
+
+CRM WRITE-BACK (the ONLY non-SELECT this package ever issues to the CRM) lives in
+:func:`update_ad_clearance`. It is guarded two ways so a write can never happen
+by accident:
+
+1. **Feature gate** — it refuses (raises :class:`CrmWriteDisabled`) unless
+   ``settings.CRM_WRITE_ENABLED`` is true (env ``CONFIRMED_CTL_CRM_WRITE``,
+   default false; set true ONLY on fang).
+2. **Strict 4-field allowlist** — it issues a SINGLE parameterized UPDATE whose
+   column list is HARDCODED to exactly ``statclearancenews`` (bound to the
+   literal ``'["Done"]'``), ``trxstring``, ``urlgmailadconfirm`` and
+   ``datepaidnews``, keyed by ``WHERE id=%s``. There is no dynamic /
+   caller-supplied column name, ever, and every value is bound via ``%s`` (never
+   string-interpolated).
 """
 
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from .. import settings
 from ..db.models import CrmAd
+
+
+class CrmWriteDisabled(RuntimeError):
+    """Raised by :func:`update_ad_clearance` when the CRM write gate is off.
+
+    Callers (``/confirm``) catch this to report ``crm_write: "disabled"`` — it
+    guarantees NO UPDATE was issued to the live CRM.
+    """
 
 # ---------------------------------------------------------------------------
 # SQL — the ABCF-X clearances query is reused VERBATIM. The SELECT column list
@@ -150,3 +171,74 @@ def get_ad(ad_crm_id: str) -> CrmAd | None:
     if not row:
         return None
     return _row_to_crm_ad(row)
+
+
+# ---------------------------------------------------------------------------
+# WRITE-BACK — the ONLY non-SELECT statement in this package.
+# ---------------------------------------------------------------------------
+
+# The clearance-done marker. EspoCRM stores multi-enum fields as JSON arrays, so
+# statclearancenews is the literal string '["Done"]' (json.dumps(["Done"])) —
+# NOT the plain 'Done'.
+CLEARANCE_DONE = json.dumps(["Done"])  # '["Done"]'
+
+# HARDCODED, strict 4-field allowlist. The column list is fixed here and never
+# derived from caller input; only the VALUES are bound (``%s``). Order of bound
+# params: statclearancenews, trxstring, urlgmailadconfirm, datepaidnews, id.
+UPDATE_AD_CLEARANCE_SQL = (
+    "UPDATE t_e_s_t_p_e_r_m "
+    "SET statclearancenews=%s, trxstring=%s, urlgmailadconfirm=%s, datepaidnews=%s "
+    "WHERE id=%s"
+)
+
+
+def update_ad_clearance(
+    ad_crm_id: str,
+    trxstring: str,
+    urlgmailadconfirm: str,
+    datepaid: date | str | None,
+) -> None:
+    """Write the clearance-done marker + audit fields back to ONE CRM ad.
+
+    Issues a SINGLE parameterized UPDATE against ``t_e_s_t_p_e_r_m`` setting the
+    strict 4-field allowlist (``statclearancenews='["Done"]'``, ``trxstring``,
+    ``urlgmailadconfirm``, ``datepaidnews``) ``WHERE id=%s``, then commits. Every
+    value is bound via ``%s``; no value is ever string-interpolated and no column
+    name is caller-supplied.
+
+    GATED: if ``settings.CRM_WRITE_ENABLED`` is false this raises
+    :class:`CrmWriteDisabled` BEFORE opening any connection, so dev/test never
+    touches the live CRM.
+
+    ``datepaid`` may be a :class:`datetime.date` (formatted ``YYYY-MM-DD``) or an
+    already-formatted string (passed through); ``None`` binds SQL ``NULL``.
+    """
+    if not settings.CRM_WRITE_ENABLED:
+        raise CrmWriteDisabled(
+            "CRM write-back is disabled: set CONFIRMED_CTL_CRM_WRITE=true "
+            "(fang only) to enable update_ad_clearance."
+        )
+
+    if isinstance(datepaid, date):
+        datepaid_value: str | None = datepaid.strftime("%Y-%m-%d")
+    elif datepaid is None or datepaid == "":
+        datepaid_value = None
+    else:
+        datepaid_value = str(datepaid)
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                UPDATE_AD_CLEARANCE_SQL,
+                (
+                    CLEARANCE_DONE,
+                    trxstring,
+                    urlgmailadconfirm,
+                    datepaid_value,
+                    ad_crm_id,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
