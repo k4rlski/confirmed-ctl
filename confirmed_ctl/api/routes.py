@@ -101,18 +101,24 @@ def _build_trxstring(txn: BankTransaction) -> str:
 def _build_gmail_url(ad_number: str | None, gmail_thread_id: str | None) -> str:
     """Build the CRM ``urlgmailadconfirm`` Gmail deep link.
 
-    Format (verified)::
+    Format (account-index-agnostic)::
 
-        https://mail.google.com/mail/u/1/#search/{adnumber}/{gmail_thread_id}
+        https://mail.google.com/mail/?authuser={GMAIL_IMPERSONATE}#all/{gmail_thread_id}
 
-    ``adnumber`` is the ad number ``.strip()``ed (CRM ``adnumbernews`` carries
-    trailing spaces). Returns an empty string when no thread id was selected —
-    the caller still writes the other fields but logs the omission.
+    Using ``?authuser=<email>`` + ``#all/<thread_id>`` opens the exact thread
+    regardless of which Google account slot (``/u/0``, ``/u/1``, …) the viewer
+    happens to be signed into — the old ``/u/1/#search/{adnum}`` form broke when
+    the account index differed. ``ad_number`` is retained in the signature for
+    backward compatibility but is no longer part of the URL. Returns an empty
+    string when no thread id was selected — the caller still writes the other
+    fields but logs the omission.
     """
     if not gmail_thread_id:
         return ""
-    adnum = (ad_number or "").strip()
-    return f"https://mail.google.com/mail/u/1/#search/{adnum}/{gmail_thread_id}"
+    return (
+        f"https://mail.google.com/mail/?authuser={settings.GMAIL_IMPERSONATE}"
+        f"#all/{gmail_thread_id}"
+    )
 
 
 @confirmed_ctl_bp.route("/sync", methods=["POST"])
@@ -200,13 +206,35 @@ def get_candidates(ad_crm_id: str):
         # Bank transaction candidates (ranked)
         candidates = get_candidate_transactions(db, ad)
 
-        # Gmail threads
-        gmail_threads = []
-        if ad.ad_number:
+        # Gmail threads. Blank ad number => a distinguishable "note" (we did NOT
+        # search); a real search failure => a surfaced "gmail_error" (we do NOT
+        # silently pretend there were no results). Otherwise the ranked thread
+        # summaries (each with gmail_url + matched_by).
+        gmail_threads: list[dict] = []
+        gmail_error: str | None = None
+        gmail_note: str | None = None
+        if not (ad.ad_number or "").strip():
+            gmail_note = "No ad number on record"
+        else:
             try:
-                gmail_threads = search_threads_by_ad_number(ad.ad_number)
+                gmail_threads = search_threads_by_ad_number(
+                    ad.ad_number,
+                    newspaper_name=ad.newspaper_name,
+                    charge_date=ad.expected_charge_date,
+                )
+            except ValueError as exc:
+                # Blank/whitespace ad number guarded inside the client.
+                logger.warning(
+                    "Gmail search skipped for ad_crm_id=%s: %s", ad_crm_id, exc
+                )
+                gmail_note = "No ad number on record"
             except Exception:
-                gmail_threads = []  # Don't break the popup if Gmail fails
+                # Real search failure (auth, API, network). Log server-side and
+                # surface a controlled error instead of an empty result set.
+                logger.exception(
+                    "Gmail thread search failed for ad_crm_id=%s", ad_crm_id
+                )
+                gmail_error = "Gmail search failed; threads could not be loaded."
 
         return jsonify({
             "ad": {
@@ -241,6 +269,8 @@ def get_candidates(ad_crm_id: str):
                 for c in candidates
             ],
             "gmail_threads": gmail_threads,
+            "gmail_error": gmail_error,
+            "gmail_note": gmail_note,
         })
 
 

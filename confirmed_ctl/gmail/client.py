@@ -18,6 +18,7 @@ import base64
 import re
 import time
 from collections.abc import Iterator
+from datetime import date, datetime, timedelta
 
 from .. import settings
 
@@ -178,47 +179,150 @@ def _extract_part(payload: dict, want_mime: str) -> str:
     return ""
 
 
-def search_threads_by_ad_number(ad_number: str, max_results: int = 5) -> list[dict]:
-    """
-    Search Gmail for threads containing the ad number string.
-    Returns list of thread summary dicts for display in popup.
-    """
-    service = get_gmail_service()
-    query = f'"{ad_number}"'  # Exact string match
+def _coerce_charge_date(value: date | str | None) -> date | None:
+    """Best-effort coerce a charge-date value into a ``date`` (or ``None``).
 
+    Accepts a ``date``/``datetime`` (``datetime`` is narrowed to its ``.date()``)
+    or a string in a few common CRM/ISO formats. Returns ``None`` when the value
+    is missing, blank, or unparseable — the caller then simply omits the
+    date-windowed paper-name fallback clause.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _list_thread_ids(service, query: str, max_results: int) -> list[str]:
+    """Return thread ids matching ``query`` (read-only ``threads().list``).
+
+    ``includeSpamTrash=True`` mirrors :func:`search_messages` — ad/receipt
+    threads can be auto-filtered to Trash/Spam and would otherwise be invisible.
+    """
     result = service.users().threads().list(
         userId="me",
         q=query,
         maxResults=max_results,
-        includeSpamTrash=True,  # BofA/ad threads can be auto-filtered to Trash
+        includeSpamTrash=True,
+    ).execute()
+    return [t["id"] for t in result.get("threads", [])]
+
+
+def _summarize_thread(service, thread_id: str, stripped_adnum: str) -> dict | None:
+    """Build a display summary dict for one thread (read-only metadata fetch).
+
+    ``matched_by`` is a best-effort classification: ``"ad_number"`` when the
+    stripped ad number appears in the first message's subject or the thread
+    snippet, else ``"paper_name"``. ``gmail_url`` is an account-index-agnostic
+    deep link using ``settings.GMAIL_IMPERSONATE`` so it opens regardless of
+    which Google account slot the viewer has signed in.
+    """
+    thread_detail = service.users().threads().get(
+        userId="me",
+        id=thread_id,
+        format="metadata",
+        metadataHeaders=["Subject", "From", "Date"],
     ).execute()
 
-    threads = result.get("threads", [])
-    summaries = []
+    messages = thread_detail.get("messages", [])
+    if not messages:
+        return None
 
-    for thread in threads:
-        thread_detail = service.users().threads().get(
-            userId="me",
-            id=thread["id"],
-            format="metadata",
-            metadataHeaders=["Subject", "From", "Date"],
-        ).execute()
+    headers = {
+        h["name"]: h["value"]
+        for h in messages[0].get("payload", {}).get("headers", [])
+    }
+    subject = headers.get("Subject", "(no subject)")
+    snippet = thread_detail.get("snippet", "")
+    matched_by = (
+        "ad_number"
+        if stripped_adnum and (stripped_adnum in subject or stripped_adnum in snippet)
+        else "paper_name"
+    )
+    return {
+        "thread_id": thread_id,
+        "subject": subject,
+        "from": headers.get("From", ""),
+        "date": headers.get("Date", ""),
+        "snippet": snippet,
+        "message_count": len(messages),
+        "gmail_url": (
+            f"https://mail.google.com/mail/?authuser={settings.GMAIL_IMPERSONATE}"
+            f"#all/{thread_id}"
+        ),
+        "matched_by": matched_by,
+    }
 
-        messages = thread_detail.get("messages", [])
-        if not messages:
-            continue
 
-        headers = {
-            h["name"]: h["value"]
-            for h in messages[0].get("payload", {}).get("headers", [])
-        }
-        summaries.append({
-            "thread_id": thread["id"],
-            "subject": headers.get("Subject", "(no subject)"),
-            "from": headers.get("From", ""),
-            "date": headers.get("Date", ""),
-            "snippet": thread_detail.get("snippet", ""),
-            "message_count": len(messages),
-        })
+def search_threads_by_ad_number(
+    ad_number: str,
+    newspaper_name: str | None = None,
+    charge_date: date | str | None = None,
+    max_results: int = 8,
+) -> list[dict]:
+    """Search Gmail for threads relevant to a CRM ad, for the /candidates popup.
+
+    Read-only (``threads().list`` + ``threads().get`` metadata only).
+
+    Query construction:
+
+    - Primary clause is the exact-string ad number (``.strip()``ed).
+    - If ``newspaper_name`` AND a parseable ``charge_date`` are both provided, a
+      DATE-WINDOWED paper-name fallback is also searched
+      (``after:charge-14d before:charge+7d``) so automated receipts that omit the
+      ad number still surface. Without a charge date the unbounded paper-name
+      clause is deliberately skipped (it would flood the popup).
+
+    Results from the two searches are merged and de-duplicated by ``thread_id``,
+    ranked ad#-matched-first then paper-name-only, and capped at ``max_results``.
+    Each summary carries the existing keys plus ``gmail_url`` and ``matched_by``.
+
+    Raises ``ValueError`` when ``ad_number`` is blank/whitespace — the caller can
+    distinguish this "no ad number on record" case from "searched, found nothing"
+    (an empty list). ``includeSpamTrash=True`` is kept throughout.
+    """
+    stripped = (ad_number or "").strip()
+    if not stripped:
+        raise ValueError("blank ad_number: refusing to search Gmail")
+
+    service = get_gmail_service()
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    for tid in _list_thread_ids(service, f'"{stripped}"', max_results):
+        if tid not in seen:
+            seen.add(tid)
+            ordered_ids.append(tid)
+
+    paper = (newspaper_name or "").strip()
+    parsed_charge = _coerce_charge_date(charge_date)
+    if paper and parsed_charge is not None:
+        after = parsed_charge - timedelta(days=14)
+        before = parsed_charge + timedelta(days=7)
+        paper_query = (
+            f'"{paper}" after:{after:%Y/%m/%d} before:{before:%Y/%m/%d}'
+        )
+        for tid in _list_thread_ids(service, paper_query, max_results):
+            if tid not in seen:
+                seen.add(tid)
+                ordered_ids.append(tid)
+
+    summaries: list[dict] = []
+    for tid in ordered_ids[:max_results]:
+        summary = _summarize_thread(service, tid, stripped)
+        if summary:
+            summaries.append(summary)
 
     return summaries
