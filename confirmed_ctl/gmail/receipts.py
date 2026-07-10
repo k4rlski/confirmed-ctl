@@ -41,6 +41,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,8 +50,10 @@ from .client import get_gmail_service
 
 log = logging.getLogger(__name__)
 
-# Keyword that marks a document as a receipt (strict mode). Lower-cased match.
-RECEIPT_KEYWORDS = ("receipt", "paid", "payment received")
+# Keyword that marks a document as a receipt (strict mode). Lower-cased,
+# letter-boundary match (see _text_has_word) so ``receipt_1234.pdf`` matches but
+# ``unpaid`` does NOT satisfy ``paid``.
+RECEIPT_KEYWORDS = ("receipt", "receipts", "paid", "payment received")
 
 # Filename/subject markers that are NEVER receipts — reject even if "receipt"
 # appears elsewhere. Ad proofs and tearsheets are ad EVIDENCE, not payment proof;
@@ -102,8 +105,23 @@ def _is_pdf(filename: str | None, mime_type: str | None) -> bool:
 
 
 def _text_has_any(text: str | None, keywords: tuple[str, ...]) -> bool:
+    """Substring match (used for the denylist — intentionally aggressive)."""
     t = (text or "").lower()
     return any(k in t for k in keywords)
+
+
+def _text_has_word(text: str | None, keywords: tuple[str, ...]) -> bool:
+    """Letter-boundary match (used for receipt keywords).
+
+    The keyword must not be flanked by ASCII letters, so ``unpaid`` does NOT
+    satisfy ``paid`` while filename separators (``receipt_1234.pdf``,
+    ``receipt-2.pdf``, ``receipt 2024``) still match. Digits/underscores/hyphens
+    count as boundaries (unlike ``\\b``, which treats ``_`` as a word char).
+    """
+    t = (text or "").lower()
+    return any(
+        re.search(r"(?<![a-z])" + re.escape(k) + r"(?![a-z])", t) for k in keywords
+    )
 
 
 def classify_attachment(
@@ -127,7 +145,7 @@ def classify_attachment(
         return False, "denylist"
     if not require_keyword:
         return True, "pdf_not_denylisted"
-    if _text_has_any(f"{filename or ''} {subject or ''} {body or ''}", RECEIPT_KEYWORDS):
+    if _text_has_word(f"{filename or ''} {subject or ''} {body or ''}", RECEIPT_KEYWORDS):
         return True, "receipt_keyword"
     return False, "no_receipt_keyword"
 
@@ -248,17 +266,29 @@ def download_thread_receipts(
 ) -> dict:
     """Download the accepted receipt PDFs from one thread. SHA-256 de-duplicated.
 
-    Returns ``{saved: [paths], skipped: [{filename, reason}], scanned: N}``.
-    ``dry_run`` classifies and reports without touching disk.
+    Returns ``{saved, present, would_download, skipped, scanned}``:
+    - ``saved``: paths newly written to disk this run.
+    - ``present``: paths of accepted receipts that already existed on disk (same
+      SHA-256) — so a crashed prior run that wrote the file but never committed
+      the DB can still be reconciled to a ``receipt_file_path``.
+    - ``would_download``: filenames accepted in ``dry_run`` (nothing written).
+    - ``skipped``: ``[{filename, reason}]`` for rejected/duplicate attachments.
     """
     scan = scan_thread(service, thread_id, require_keyword=require_keyword)
-    result: dict = {"saved": [], "skipped": [], "scanned": len(scan.hits)}
+    result: dict = {
+        "saved": [],
+        "present": [],
+        "would_download": [],
+        "skipped": [],
+        "scanned": len(scan.hits),
+    }
 
     for hit in scan.hits:
         if not hit.accepted:
             result["skipped"].append({"filename": hit.filename, "reason": hit.reason})
 
     if dry_run:
+        result["would_download"] = [h.filename for h in scan.accepted]
         return result
 
     save_dir = Path(settings.RECEIPTS_BASE_PATH) / year / month / ad_number
@@ -276,6 +306,9 @@ def download_thread_receipts(
         file_data = base64.urlsafe_b64decode(attachment["data"])
         digest = hashlib.sha256(file_data).hexdigest()
         if digest in seen:
+            # Already on disk (dedup). Record the existing path so the DB can
+            # still be updated even when nothing new was written this run.
+            result["present"].append(seen[digest])
             result["skipped"].append(
                 {"filename": hit.filename, "reason": "duplicate_sha256"}
             )
@@ -346,12 +379,17 @@ def process_pending_receipts(
                 {"ad_crm_id": conf.ad_crm_id, "ad_number": conf.ad_number, **r}
             )
             saved = r["saved"]
+            present = r.get("present", [])
             results["downloaded"] += len(saved)
             results["skipped"] += len(r["skipped"])
-            if saved and not dry_run:
-                conf.receipt_file_path = saved[0]
-                if len(saved) > 1:
-                    conf.receipt_url = ",".join(saved)
+            # On-disk receipts for this ad = newly saved + pre-existing (dedup).
+            # Setting the path from ``present`` too recovers ads whose file was
+            # written by a prior run that crashed before the DB commit.
+            on_disk = saved + present
+            if on_disk and not dry_run:
+                conf.receipt_file_path = on_disk[0]
+                if len(on_disk) > 1:
+                    conf.receipt_url = ",".join(on_disk)
                 results["processed"] += 1
         except Exception as e:  # noqa: BLE001 - per-ad isolation; keep going
             log.exception("receipt download failed for ad_crm_id=%s", conf.ad_crm_id)

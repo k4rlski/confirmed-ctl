@@ -76,6 +76,18 @@ def test_loose_mode_accepts_any_non_denylisted_pdf():
     assert reason2 == "denylist"
 
 
+def test_unpaid_does_not_satisfy_paid_keyword():
+    # Word-boundary match: "unpaid" must NOT accept via the "paid" keyword.
+    ok, reason = rc.classify_attachment(
+        "document.pdf", "application/pdf", "Your account is unpaid", ""
+    )
+    assert ok is False
+    assert reason == "no_receipt_keyword"
+    # But a real whole-word "paid" does accept.
+    ok2, _ = rc.classify_attachment("document.pdf", "application/pdf", "Paid in full", "")
+    assert ok2 is True
+
+
 def test_pdf_detected_by_mime_when_extension_missing():
     ok, _ = rc.classify_attachment("receipt-nodot", "application/pdf", "receipt", "")
     assert ok is True
@@ -261,6 +273,7 @@ def test_download_dry_run_writes_nothing(tmp_path, monkeypatch):
     svc = _FakeService(_thread_with(parts), {"a1": b"%PDF"})
     r = rc.download_thread_receipts(svc, "t1", "IPR001", "2026", "07", dry_run=True)
     assert r["saved"] == []
+    assert r["would_download"] == ["receipt.pdf"]  # listed, not written
     assert not (tmp_path / "2026").exists()
 
 
@@ -335,6 +348,32 @@ def test_process_pending_dry_run_no_db_write(tmp_path, monkeypatch):
     assert conf.receipt_file_path is None
     assert session.committed is False
     assert result["pending"] == 1
+
+
+def test_process_pending_sets_path_when_file_already_present(tmp_path, monkeypatch):
+    # Simulate a prior run that wrote the PDF but crashed before the DB commit:
+    # the file exists on disk (same bytes) so the download is a duplicate, yet
+    # receipt_file_path must still be set from the pre-existing file.
+    import datetime
+
+    monkeypatch.setattr(rc.settings, "RECEIPTS_BASE_PATH", str(tmp_path))
+    existing_dir = tmp_path / "2026" / "07" / "IPR001"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "receipt.pdf").write_bytes(b"%PDF-real")
+
+    parts = [
+        {"filename": "receipt.pdf", "mimeType": "application/pdf", "body": {"attachmentId": "a1"}},
+    ]
+    svc = _FakeService(_thread_with(parts), {"a1": b"%PDF-real"})
+    monkeypatch.setattr(rc, "get_gmail_service", lambda: svc)
+
+    conf = _Conf("crm1", "t1", "IPR001", datetime.datetime(2026, 7, 9))
+    session = _Session([conf])
+    result = rc.process_pending_receipts(session)
+    assert result["processed"] == 1           # recovered even though 0 new saved
+    assert result["downloaded"] == 0          # nothing newly written
+    assert conf.receipt_file_path.endswith("IPR001/receipt.pdf")
+    assert session.committed is True
 
 
 @pytest.mark.parametrize("rows", [[]])

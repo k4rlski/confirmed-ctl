@@ -98,8 +98,13 @@ def _print_receipt_result(result, *, dry_run):
     )
     for d in result["details"]:
         tag = d.get("ad_number") or d.get("ad_crm_id")
-        if d["saved"]:
-            click.echo(f"  [{tag}] {verb}: " + ", ".join(d["saved"]))
+        # dry-run lists filenames in would_download; a real run lists saved paths
+        # (plus any already-present files recovered via dedup).
+        accepted = d.get("saved") or d.get("would_download") or []
+        if accepted:
+            click.echo(f"  [{tag}] {verb}: " + ", ".join(accepted))
+        for p in d.get("present", []):
+            click.echo(f"  [{tag}] already on disk: {p}")
         for s in d["skipped"]:
             click.echo(f"  [{tag}] skip {s['filename']!r} ({s['reason']})")
     for e in result["errors"]:
