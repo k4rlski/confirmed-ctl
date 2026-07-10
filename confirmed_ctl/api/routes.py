@@ -741,6 +741,12 @@ def list_reconciled():
                 "confirmed_at": (
                     conf.confirmed_at.isoformat() if conf.confirmed_at else None
                 ),
+                # Receipt PDF pulled from the ad-confirmation thread (receipt-ctl
+                # confirmed-ctl half). ``receipt_file_path`` is the fang-local
+                # path; ``has_receipt`` is the UI indicator. A web-served download
+                # endpoint is a follow-up (files live on fang disk, not web-root).
+                "receipt_file_path": conf.receipt_file_path,
+                "has_receipt": bool(conf.receipt_file_path),
             })
             ads_out.append(item)
 
