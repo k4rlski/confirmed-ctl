@@ -307,17 +307,41 @@ which Google account slot (`/u/0`, `/u/1`, …) the viewer is signed into — th
 in the signature for backward compatibility but is no longer part of the URL. Returns
 `""` when no thread id was selected.
 
-**Receipt/attachment download (`gmail/receipts.py`) — documents the former "gmail-ctl"
-concern in-place.** The lightweight in-suite downloader:
-- `download_receipt(thread_id, ad_number, year, month)` — fetches a full thread and
-  downloads every attachment (PDF/image) to
-  `RECEIPTS_BASE_PATH/{year}/{month}/{ad_number}/`, returning saved paths.
-- `process_pending_receipts(db)` — batch: finds `ad_confirmations` rows with a
-  `gmail_thread_id` but no `receipt_file_path`, downloads, and writes
-  `receipt_file_path` (primary) + `receipt_url` (comma-joined all). Run via
-  `confirmed-ctl receipts`.
-- The standalone **receipt-ctl** tool (dedup, cloud storage, its own audit tables)
-  supersedes this for production archiving; the in-suite path stays for convenience.
+**Receipt/attachment download (`gmail/receipts.py`) — receipt-ctl / ad-buy half, built
+IN-SUITE (confirmed-ctl#27).** Pulls receipt PDFs from the AD-CONFIRMATION Gmail thread of
+CONFIRMED ads only. Read-only against Gmail; the BofA alert thread is NEVER touched. The
+vendor-portal invoice-scraper half stays in the standalone `receipt-ctl` repo
+(k4rlski/receipt-ctl#2), to graduate this module later.
+
+- **Classifier `classify_attachment(filename, mime, subject, body, *, require_keyword)`**
+  returns `(accepted, reason)` with strict ordering: (1) non-PDF → `not_pdf`; (2) a
+  denylisted FILENAME (invoice/proof/tearsheet/statement/order/campaign…) → `denylist`
+  (filename always wins, so `invoice receipt.pdf` is still an invoice); (3) a
+  receipt-keyword FILENAME (`receipt.pdf`) → `receipt_keyword` (accepted even when the
+  subject mentions an invoice — common mixed threads); (4) else a denylisted
+  subject/body → `denylist_context`; (5) loose mode → `pdf_not_denylisted`; (6) else a
+  receipt keyword in subject/body → `receipt_keyword`, otherwise `no_receipt_keyword`.
+  Receipt keywords use letter-boundary matching so `unpaid` does NOT satisfy `paid`.
+- **`_walk_parts`** recurses multipart messages in document order; **SHA-256 dedup**
+  against files already in the target dir; `_dedupe_name` avoids on-disk collisions.
+- **`scan_thread` / `download_thread_receipts`** return `{saved, present, would_download,
+  skipped, scanned}`. `present` = accepted receipts already on disk (recovers ads whose
+  file was written by a prior crashed run before the DB commit); `would_download` = names
+  accepted in `--dry-run` (nothing written).
+- **`process_pending_receipts(db, *, ad_crm_id=None, require_keyword=True, dry_run=False)`**
+  — scope = `ad_confirmations` with `gmail_thread_id` set AND `receipt_file_path` NULL
+  (optionally one `ad_crm_id`). Writes `receipt_file_path` (first PDF) and always mirrors
+  the on-disk path(s) into `receipt_url` (comma-joined when a thread yields multiple).
+- **Storage:** `RECEIPTS_BASE_PATH/{year}/{month}/{ad_number}/` — on FANG this is
+  `/var/lib/confirmed-ctl/receipts` (owned `auto-ops:auto-ops`); `/mnt/receipts` was a
+  never-provisioned placeholder and is NOT used.
+- **CLI:** `confirmed-ctl receipt gmail-scan` (dry-run classify), `download-receipts`
+  (`--ad-crm-id`, `--loose`, `--dry-run`), `xfer-receipts` (Dropbox transfer — stub,
+  confirmed-ctl#31). Legacy `confirmed-ctl receipts` remains a back-compat alias.
+- **API/UI:** `/reconciled` rows carry `has_receipt` + `receipt_file_path`; MARS
+  `/adm/confirmed-ctl-adm` shows a **Receipt** column (PDF-present badge) and there is a
+  `/adm/receipt-ctl-adm` scaffold. A web-served download endpoint is a follow-up
+  (confirmed-ctl#30). First prod run: 12 PDFs across 10 reconciled ads (2026-07-10).
 
 ---
 
@@ -356,8 +380,12 @@ Chroma imported lazily.
 confirmed-ctl sync [--lookback-days 2]   # run the BofA email-scan ingest (run_email_scan);
                                          #   inserts idempotently + writes a SyncLog
 confirmed-ctl status                     # last sync run (synced_at, fetched, new)
-confirmed-ctl receipts                   # in-suite receipt download for confirmed ads
-                                         #   with a gmail_thread_id (process_pending_receipts)
+confirmed-ctl receipt gmail-scan         # DRY-RUN: classify ad-confirm-thread attachments
+                                         #   for confirmed ads missing a receipt (no writes)
+confirmed-ctl receipt download-receipts  # download accepted receipt PDFs -> RECEIPTS_BASE_PATH;
+    [--ad-crm-id ID] [--loose] [--dry-run]  #   sets receipt_file_path/receipt_url
+confirmed-ctl receipt xfer-receipts      # STUB: Dropbox case-tree transfer (confirmed-ctl#31)
+confirmed-ctl receipts                   # back-compat alias for process_pending_receipts
 confirmed-ctl match --ad-crm-id <id>     # STUB: exits non-zero — live CRM ad hydration in CLI
                                          #   is a later gen (the API path uses the CRM adapter)
 
@@ -392,11 +420,13 @@ confirmed-ctl ignore backfill            # flag existing rows matching an active
   MARS admin page `/adm/confirmed-ctl-adm` (claw `static/confirmed-ctl-adm.html` +
   `routes/confirmed_ctl_adm_bp.py`) proxies `/api/confirmed-ctl/*` to fang.
 - **Postgres:** the standalone `confirmed_ctl` database on fang. Apply migrations with
-  `alembic upgrade head` (head `0003_ignore_memo_patterns`).
+  `alembic upgrade head` (head `0004_bank_txn_bofa_thread`, adds
+  `bank_transactions.bofa_gmail_thread_id`).
 - **Config (`.env` / `settings.py`):** `DATABASE_URL`; CRM `CRM_DB_HOST/USER/PASS/NAME/PORT`;
   `CONFIRMED_CTL_CRM_WRITE` (true only on fang); `GMAIL_TOKEN_PATH`, `GMAIL_IMPERSONATE`;
   `EMAIL_SCAN_LOOKBACK_DAYS`, `MATCH_LOOKBACK_DAYS`/`_LOOKAHEAD_DAYS`;
-  `RECEIPTS_BASE_PATH` (default `/mnt/receipts`); `CHROMA_PATH`; `SYNC_INTERVAL_SECONDS`;
+  `RECEIPTS_BASE_PATH` (fang `/var/lib/confirmed-ctl/receipts`; code default
+  `/var/lib/confirmed-ctl/receipts`); `CHROMA_PATH`; `SYNC_INTERVAL_SECONDS`;
   `CONFIRMED_CTL_API_TOKEN`, `CONFIRMED_CTL_REQUIRE_AUTH`, `CONFIRMED_CTL_API_BIND`.
 - **Packaging:** `pyproject.toml` v0.2.0. Core deps: click, python-dotenv, requests,
   SQLAlchemy, alembic. `[live]` extras: psycopg2-binary, google-auth(+oauthlib),
