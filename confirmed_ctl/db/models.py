@@ -93,11 +93,13 @@ class CrmAd:
     # ``approved_date`` is the ad approval date (``adsapproveddate``);
     # ``buy_date`` is ``datebuynews`` exposed distinctly from
     # ``expected_charge_date`` (which falls back to the run start when buy is
-    # NULL). ``beneficiary_last`` is ``beneficiarylast``. ``clearance_status`` is
-    # the raw EspoCRM ``statclearancenews`` enum string (e.g. ``'["Confirmed"]'``)
-    # passed through as-is.
+    # NULL). ``beneficiary_first``/``beneficiary_last`` are ``beneficiaryfirst``/
+    # ``beneficiarylast``. ``clearance_status`` is the raw EspoCRM
+    # ``statclearancenews`` enum string (e.g. ``'["Confirmed"]'``) passed
+    # through as-is.
     approved_date: date | None = None
     buy_date: date | None = None
+    beneficiary_first: str | None = None
     beneficiary_last: str | None = None
     clearance_status: str | None = None
 
@@ -170,6 +172,13 @@ class BankTransaction(Base):
     account_name: Mapped[str | None] = mapped_column(String(255))
     line_descriptions: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     raw_json: Mapped[dict | None] = mapped_column(JSONB)
+    # Gmail thread id of the SOURCE BofA transaction-alert email that produced
+    # this row (email-scan adapter). Captured at ingest from the message stub's
+    # ``threadId``; NULL for rows ingested before this column existed or from a
+    # non-email source. The account-index-agnostic deep link is built on read
+    # (``bofa_gmail_url``) — NEVER confuse this with the ad-confirmation thread
+    # on ``ad_confirmations.gmail_thread_id`` (a different email).
+    bofa_gmail_thread_id: Mapped[str | None] = mapped_column(String(255))
     # Logical pointer at the confirmed CRM ad (EspoCRM record id). No FK: the ad
     # is in the MariaDB CRM, not this DB. NULL == unmatched.
     confirmed_ad_crm_id: Mapped[str | None] = mapped_column(String(50), index=True)

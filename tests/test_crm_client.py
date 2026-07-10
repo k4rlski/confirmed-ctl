@@ -60,6 +60,7 @@ def _sample_row(**overrides):
         "name": "Eduexplora International",
         "jobtitle": "Analyst",
         "attyname": "Jane Atty",
+        "beneficiaryfirst": "Jane",
         "beneficiarylast": "Doe",
         "entity": "JKT",
         "statclearancenews": '["Confirmed"]',
@@ -152,6 +153,7 @@ def test_list_clearances_query_verbatim_and_mapping(monkeypatch, configured):
     assert ad.approved_date == date(2026, 6, 1)
     # buy_date is datebuynews surfaced distinctly from expected_charge_date.
     assert ad.buy_date == date(2026, 6, 17)
+    assert ad.beneficiary_first == "Jane"
     assert ad.beneficiary_last == "Doe"
     # clearance_status is the raw EspoCRM enum string, passed through as-is.
     assert ad.clearance_status == '["Confirmed"]'
@@ -171,6 +173,9 @@ def test_select_from_includes_new_columns():
     assert "t_e_s_t_p_e_r_m.jobtitle" in crm._SELECT_FROM
     assert "t_e_s_t_p_e_r_m.statnews" in crm._SELECT_FROM
     assert "news.owner AS owner" in crm._SELECT_FROM
+    # beneficiary first/last both feed the Bank-Trx modal Related-CRM block.
+    assert "t_e_s_t_p_e_r_m.beneficiaryfirst" in crm._SELECT_FROM
+    assert "t_e_s_t_p_e_r_m.beneficiarylast" in crm._SELECT_FROM
 
 
 def test_row_to_crm_ad_maps_richer_fields_and_strips_ad_number(monkeypatch, configured):

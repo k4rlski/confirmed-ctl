@@ -92,6 +92,7 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
         owner="karl",
         approved_date=date(2026, 6, 1),
         buy_date=date(2026, 6, 17),
+        beneficiary_first="Ann",
         beneficiary_last="Doe",
         clearance_status='["Confirmed"]',
     )
@@ -143,6 +144,7 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     # New ABCF-X contract columns exposed on the candidates ad.
     assert data["ad"]["approved_date"] == "2026-06-01"
     assert data["ad"]["buy_date"] == "2026-06-17"
+    assert data["ad"]["beneficiary_first"] == "Ann"
     assert data["ad"]["beneficiary_last"] == "Doe"
     assert data["ad"]["clearance_status"] == '["Confirmed"]'
     # The excluded near-miss array is always present (empty here).
@@ -220,6 +222,7 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
     # New ABCF-X contract columns also serialize as null when unset.
     assert ad_json["approved_date"] is None
     assert ad_json["buy_date"] is None
+    assert ad_json["beneficiary_first"] is None
     assert ad_json["beneficiary_last"] is None
     assert ad_json["clearance_status"] is None
 
@@ -330,7 +333,8 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
               attorney="John Atty", entity="PA", job_title="Engineer",
               run_end=date(2026, 6, 10), status_news='["Active"]', owner="karl",
               approved_date=date(2026, 6, 1), buy_date=date(2026, 6, 4),
-              beneficiary_last="Smith", clearance_status='["Confirmed"]'),
+              beneficiary_first="Bob", beneficiary_last="Smith",
+              clearance_status='["Confirmed"]'),
     ]
     monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
     # "A" is already confirmed in Postgres -> only "B" should remain.
@@ -356,6 +360,7 @@ def test_unconfirmed_excludes_already_confirmed(client, monkeypatch):
     # New ABCF-X contract columns exposed on the unconfirmed ads.
     assert ad_b["approved_date"] == "2026-06-01"
     assert ad_b["buy_date"] == "2026-06-04"
+    assert ad_b["beneficiary_first"] == "Bob"
     assert ad_b["beneficiary_last"] == "Smith"
     assert ad_b["clearance_status"] == '["Confirmed"]'
 
@@ -461,7 +466,7 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
               run_date=date(2026, 6, 1), expected_charge_date=date(2026, 6, 2),
               expected_amount=100.0, clearance_status='["Done"]',
               approved_date=date(2026, 5, 30), buy_date=date(2026, 6, 2),
-              beneficiary_last="Doe"),
+              beneficiary_first="John", beneficiary_last="Doe"),
         CrmAd(crm_id="B", ad_number="AD-B", newspaper_name="Sun Sentinel",
               run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
               expected_amount=200.0, clearance_status='["Done"]'),
@@ -482,7 +487,8 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
         confirmed_at=datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc),
     )
     txn_a = BankTransaction(id=11, source="email-scan", source_txn_id="a",
-                            txn_date=date(2026, 6, 2), total_amount=-100.0)
+                            txn_date=date(2026, 6, 2), total_amount=-100.0,
+                            bofa_gmail_thread_id="bofaA")
     txn_b = BankTransaction(id=12, source="email-scan", source_txn_id="b",
                             txn_date=date(2026, 6, 4), total_amount=-200.0)
     _patch_db(monkeypatch, _ReconciledSession([conf_a, conf_b], [txn_a, txn_b]))
@@ -500,6 +506,7 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
     assert ad_a["clearance_status"] == '["Done"]'
     assert ad_a["approved_date"] == "2026-05-30"
     assert ad_a["buy_date"] == "2026-06-02"
+    assert ad_a["beneficiary_first"] == "John"
     assert ad_a["beneficiary_last"] == "Doe"
     # Mapped bank + gmail + confirmed_at info.
     assert ad_a["bank_txn_id"] == 11
@@ -508,6 +515,8 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
     assert ad_a["gmail_thread_id"] == "thrA"
     assert ad_a["gmail_url"].startswith("https://mail.google.com/mail/?authuser=")
     assert ad_a["gmail_url"].endswith("#all/thrA")
+    # BofA-alert deep link for the mapped bank txn (from bofa_gmail_thread_id).
+    assert ad_a["bofa_gmail_url"].endswith("#all/bofaA")
     assert ad_a["confirmed_at"].startswith("2026-06-05")
 
 
@@ -533,24 +542,49 @@ def test_reconciled_none_safe_when_no_bank_txn(client, monkeypatch):
     assert ad["bank_txn_date"] is None
     assert ad["gmail_thread_id"] is None
     assert ad["gmail_url"] == ""
+    # No mapped bank txn -> BofA deep link is the empty string (None-safe).
+    assert ad["bofa_gmail_url"] == ""
     assert ad["confirmed_at"] is None
 
 
 # --------------------------------------------------------------------------- #
 # /bank-transaction/<txn_id> — read-only Bank-Trx modal detail
 # --------------------------------------------------------------------------- #
-class _GetSession:
-    """Minimal session exposing ``get(BankTransaction, pk)`` -> a fixed row.
+class _GetConfQuery:
+    """Fake ``query(AdConfirmation).filter(...).first()`` chain for the modal.
 
-    Mirrors ``Session.get``: returns the stored txn (representing the row for the
-    requested id) or ``None`` to model an unknown id (404 path).
+    Returns the seeded ad-confirmation row (or ``None``) so the widened
+    Related-CRM block can surface the ad-confirm Gmail thread.
     """
 
-    def __init__(self, txn):
+    def __init__(self, ad_conf):
+        self._ad_conf = ad_conf
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self._ad_conf
+
+
+class _GetSession:
+    """Minimal session exposing ``get(BankTransaction, pk)`` -> a fixed row and
+    ``query(AdConfirmation)`` -> the seeded ad-confirmation row.
+
+    Mirrors ``Session.get``: returns the stored txn (representing the row for the
+    requested id) or ``None`` to model an unknown id (404 path). ``query`` serves
+    the ad-confirm Gmail lookup added to the Related-CRM block (None-safe).
+    """
+
+    def __init__(self, txn, ad_conf=None):
         self._txn = txn
+        self._ad_conf = ad_conf
 
     def get(self, model, pk):
         return self._txn
+
+    def query(self, *args, **kwargs):
+        return _GetConfQuery(self._ad_conf)
 
 
 def _detail_txn(**overrides):
@@ -588,11 +622,16 @@ def test_bank_transaction_404_unknown_id(client, monkeypatch):
 def test_bank_transaction_consumed_related_populated(client, monkeypatch):
     # A CONSUMED txn (confirmed_ad_crm_id set) -> related CRM summary populated.
     txn = _detail_txn(confirmed_ad_crm_id="REC777",
-                      confirmed_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc))
-    _patch_db(monkeypatch, _GetSession(txn))
+                      confirmed_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc),
+                      bofa_gmail_thread_id="bofaThr1")
+    ad_conf = AdConfirmation(ad_crm_id="REC777", gmail_thread_id="adcThr1")
+    _patch_db(monkeypatch, _GetSession(txn, ad_conf=ad_conf))
     ad = CrmAd(crm_id="REC777", ad_number="IPR00160880",
                client_name="Eduexplora International", newspaper_name="LA Times",
-               case_number="A-2026-0042")
+               case_number="A-2026-0042", job_title="Software Engineer",
+               beneficiary_first="Jane", beneficiary_last="Doe",
+               attorney="Jane Atty", run_date=date(2026, 6, 15),
+               run_end=date(2026, 6, 20))
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
 
     resp = client.get("/confirmed-ctl/bank-transaction/42")
@@ -614,15 +653,33 @@ def test_bank_transaction_consumed_related_populated(client, monkeypatch):
     assert data["confirmed_ad_crm_id"] == "REC777"
     assert data["confirmed_at"].startswith("2026-06-29")
     assert data["created_at"].startswith("2026-06-28")
-    # Related CRM summary populated for the consumed txn.
+    # Top-level BofA-alert Gmail deep link (distinct from the ad-confirm thread).
+    assert data["bofa_gmail_thread_id"] == "bofaThr1"
+    assert data["bofa_gmail_url"].startswith(
+        "https://mail.google.com/mail/?authuser="
+    )
+    assert data["bofa_gmail_url"].endswith("#all/bofaThr1")
+    # Related CRM summary populated for the consumed txn (widened contract).
     assert "related_error" not in data
-    assert data["related"] == {
-        "crm_id": "REC777",
-        "case_number": "A-2026-0042",
-        "client_name": "Eduexplora International",
-        "ad_number": "IPR00160880",
-        "newspaper_name": "LA Times",
-    }
+    rel = data["related"]
+    # Existing five keys preserved.
+    assert rel["crm_id"] == "REC777"
+    assert rel["case_number"] == "A-2026-0042"
+    assert rel["client_name"] == "Eduexplora International"
+    assert rel["ad_number"] == "IPR00160880"
+    assert rel["newspaper_name"] == "LA Times"
+    # Widened Related-CRM fields.
+    assert rel["job_title"] == "Software Engineer"
+    assert rel["beneficiary_first"] == "Jane"
+    assert rel["beneficiary_last"] == "Doe"
+    assert rel["attorney"] == "Jane Atty"
+    assert rel["run_date"] == "2026-06-15"
+    assert rel["run_end"] == "2026-06-20"
+    # Ad-confirmation Gmail thread + deep link (from ad_confirmations, NOT BofA).
+    assert rel["ad_confirm_gmail_thread_id"] == "adcThr1"
+    assert rel["ad_confirm_gmail_url"].endswith("#all/adcThr1")
+    # The two Gmail links are genuinely different threads.
+    assert data["bofa_gmail_url"] != rel["ad_confirm_gmail_url"]
 
 
 def test_bank_transaction_unconsumed_related_null(client, monkeypatch):
@@ -642,6 +699,9 @@ def test_bank_transaction_unconsumed_related_null(client, monkeypatch):
     assert data["confirmed_ad_crm_id"] is None
     assert data["related"] is None
     assert "related_error" not in data
+    # No BofA thread captured for this seed -> thread id null, url empty string.
+    assert data["bofa_gmail_thread_id"] is None
+    assert data["bofa_gmail_url"] == ""
 
 
 def test_bank_transaction_raw_json_dict_extraction(client, monkeypatch):
@@ -705,3 +765,25 @@ def test_bank_transaction_related_error_when_crm_fails(client, monkeypatch):
     assert data["related_error"] == "crm_unavailable"
     # No raw exception text leaked to the client.
     assert "pymysql" not in json.dumps(data)
+
+
+# --------------------------------------------------------------------------- #
+# _build_gmail_url — account-index-agnostic deep link (ad_number is ignored)
+# --------------------------------------------------------------------------- #
+def test_build_gmail_url_ignores_ad_number_and_uses_thread():
+    url = routes._build_gmail_url(None, "THREAD123")
+    assert url.startswith("https://mail.google.com/mail/?authuser=")
+    assert url.endswith("#all/THREAD123")
+    # ad_number is ignored: the URL is identical whether or not one is supplied,
+    # and the literal string "None" is never injected into it.
+    assert routes._build_gmail_url("AD-999", "THREAD123") == url
+    assert "None" not in url
+
+
+def test_build_gmail_url_empty_when_no_thread():
+    # Empty / None thread id -> "" (never a URL, never the literal "None"),
+    # regardless of the ignored ad_number argument.
+    assert routes._build_gmail_url(None, None) == ""
+    assert routes._build_gmail_url(None, "") == ""
+    assert routes._build_gmail_url("AD-1", None) == ""
+    assert routes._build_gmail_url("AD-1", "") == ""

@@ -65,7 +65,8 @@ class CrmWriteError(RuntimeError):
 # ---------------------------------------------------------------------------
 _SELECT_FROM = """SELECT news.owner AS owner, t_e_s_t_p_e_r_m.id, t_e_s_t_p_e_r_m.adsapproveddate,
        t_e_s_t_p_e_r_m.datebuynews, t_e_s_t_p_e_r_m.datenewsstart, t_e_s_t_p_e_r_m.name,
-       t_e_s_t_p_e_r_m.jobtitle, t_e_s_t_p_e_r_m.attyname, t_e_s_t_p_e_r_m.beneficiarylast,
+       t_e_s_t_p_e_r_m.jobtitle, t_e_s_t_p_e_r_m.attyname,
+       t_e_s_t_p_e_r_m.beneficiaryfirst, t_e_s_t_p_e_r_m.beneficiarylast,
        t_e_s_t_p_e_r_m.entity, t_e_s_t_p_e_r_m.statclearancenews, t_e_s_t_p_e_r_m.statnews,
        t_e_s_t_p_e_r_m.statacctgcreditnews, t_e_s_t_p_e_r_m.dboxemailthreadcase,
        t_e_s_t_p_e_r_m.adnumbernews, news.name AS newspapers_name, news.rank,
@@ -208,6 +209,7 @@ def _row_to_crm_ad(row: dict) -> CrmAd:
         approved_date=row.get("adsapproveddate"),
         # buy_date is datebuynews surfaced distinctly from expected_charge_date.
         buy_date=row.get("datebuynews"),
+        beneficiary_first=row.get("beneficiaryfirst"),
         beneficiary_last=row.get("beneficiarylast"),
         # clearance_status is the raw EspoCRM statclearancenews enum string
         # (e.g. '["Confirmed"]') — pass through as-is; do NOT parse it here.

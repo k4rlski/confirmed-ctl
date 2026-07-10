@@ -62,6 +62,9 @@ def _crm_ad_to_dict(ad: CrmAd) -> dict:
         "owner": str(ad.owner) if ad.owner is not None else None,
         "approved_date": str(ad.approved_date) if ad.approved_date else None,
         "buy_date": str(ad.buy_date) if ad.buy_date else None,
+        "beneficiary_first": (
+            str(ad.beneficiary_first) if ad.beneficiary_first is not None else None
+        ),
         "beneficiary_last": (
             str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
         ),
@@ -345,6 +348,9 @@ def get_candidates(ad_crm_id: str):
                 # is the raw statclearancenews enum string passed through as-is.
                 "approved_date": str(ad.approved_date) if ad.approved_date else None,
                 "buy_date": str(ad.buy_date) if ad.buy_date else None,
+                "beneficiary_first": (
+                    str(ad.beneficiary_first) if ad.beneficiary_first is not None else None
+                ),
                 "beneficiary_last": (
                     str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
                 ),
@@ -626,6 +632,9 @@ def list_unconfirmed():
                 # is the raw statclearancenews enum string passed through as-is.
                 "approved_date": str(ad.approved_date) if ad.approved_date else None,
                 "buy_date": str(ad.buy_date) if ad.buy_date else None,
+                "beneficiary_first": (
+                    str(ad.beneficiary_first) if ad.beneficiary_first is not None else None
+                ),
                 "beneficiary_last": (
                     str(ad.beneficiary_last) if ad.beneficiary_last is not None else None
                 ),
@@ -720,6 +729,15 @@ def list_reconciled():
                 ),
                 "gmail_thread_id": conf.gmail_thread_id,
                 "gmail_url": _build_gmail_url(ad.ad_number, conf.gmail_thread_id),
+                # BofA transaction-alert Gmail deep link for the mapped bank txn
+                # (top-level column on bank_transactions). Empty string when this
+                # reconciled ad has no mapped bank txn or the txn predates the
+                # bofa_gmail_thread_id capture. NEVER the ad-confirm thread above.
+                "bofa_gmail_url": (
+                    _build_gmail_url(None, txn.bofa_gmail_thread_id)
+                    if txn is not None
+                    else ""
+                ),
                 "confirmed_at": (
                     conf.confirmed_at.isoformat() if conf.confirmed_at else None
                 ),
@@ -797,6 +815,13 @@ def get_bank_transaction(txn_id: str):
                 txn.created_in_db.isoformat() if txn.created_in_db else None
             ),
             "confirmed_ad_crm_id": txn.confirmed_ad_crm_id,
+            # BofA transaction-alert Gmail thread that produced this row (captured
+            # at ingest). ``bofa_gmail_url`` is the account-index-agnostic deep
+            # link built on read (empty string when no thread id). This is the
+            # bank-alert email — distinct from the ad-confirmation thread that
+            # lands under ``related.ad_confirm_gmail_*``.
+            "bofa_gmail_thread_id": txn.bofa_gmail_thread_id,
+            "bofa_gmail_url": _build_gmail_url(None, txn.bofa_gmail_thread_id),
             "related": None,
         }
 
@@ -804,6 +829,16 @@ def get_bank_transaction(txn_id: str):
         # pointer is set). A CRM outage must NOT sink the whole endpoint — the
         # txn detail always renders; we degrade to related=null + related_error.
         if txn.confirmed_ad_crm_id:
+            # Ad-confirmation Gmail thread for this ad (from ad_confirmations —
+            # the vendor's ad-confirmation email, NOT the BofA alert above). Read
+            # from the same-DB Postgres row; None-safe when absent. This read is
+            # cheap and never blocks the modal.
+            ad_conf = (
+                db.query(AdConfirmation)
+                .filter(AdConfirmation.ad_crm_id == txn.confirmed_ad_crm_id)
+                .first()
+            )
+            ad_confirm_thread_id = ad_conf.gmail_thread_id if ad_conf else None
             try:
                 ad = _lookup_crm_ad(txn.confirmed_ad_crm_id)
             except Exception:
@@ -825,6 +860,34 @@ def get_bank_transaction(txn_id: str):
                         "client_name": ad.client_name,
                         "ad_number": ad.ad_number,
                         "newspaper_name": ad.newspaper_name,
+                        # Widened Related-CRM fields for the Bank-Trx modal.
+                        # None-safe strings; run_date (datenewsstart) / run_end
+                        # (datenewsend) serialize as date strings.
+                        "job_title": (
+                            str(ad.job_title) if ad.job_title is not None else None
+                        ),
+                        "beneficiary_first": (
+                            str(ad.beneficiary_first)
+                            if ad.beneficiary_first is not None
+                            else None
+                        ),
+                        "beneficiary_last": (
+                            str(ad.beneficiary_last)
+                            if ad.beneficiary_last is not None
+                            else None
+                        ),
+                        "attorney": (
+                            str(ad.attorney) if ad.attorney is not None else None
+                        ),
+                        "run_date": str(ad.run_date) if ad.run_date else None,
+                        "run_end": str(ad.run_end) if ad.run_end else None,
+                        # Ad-confirmation Gmail thread + deep link (distinct from
+                        # the top-level BofA alert thread). URL is empty when no
+                        # ad-confirmation thread was recorded.
+                        "ad_confirm_gmail_thread_id": ad_confirm_thread_id,
+                        "ad_confirm_gmail_url": _build_gmail_url(
+                            ad.ad_number, ad_confirm_thread_id
+                        ),
                     }
 
         return jsonify(payload)
