@@ -607,3 +607,36 @@ def test_run_email_scan_is_idempotent(fake_gmail):
     assert result2["skipped"] == 8
     assert len(session.store) == 8
     assert len(session.sync_logs) == 2
+
+
+# --- BofA alert Gmail thread-id capture ------------------------------------
+
+
+def test_parse_message_threads_alert_thread_id():
+    # parse_message threads the alert Gmail threadId onto every produced txn.
+    card = parse_message(CARD_HTML, SUBJ_CARD, MSG_CARD, None, thread_id="tCARD")
+    assert card and card[0].thread_id == "tCARD"
+    used = parse_message(
+        USED_BATCH_HTML, SUBJ_USED, MSG_USED_BATCH, None, thread_id="tUSED"
+    )
+    assert used and all(t.thread_id == "tUSED" for t in used)
+    # Omitted thread id stays None (older parse paths / tests).
+    assert parse_message(CARD_HTML, SUBJ_CARD, MSG_CARD, None)[0].thread_id is None
+
+
+def test_scan_captures_bofa_thread_id_onto_model(fake_gmail):
+    # scan_messages captures each stub's threadId; the model build persists it to
+    # bank_transactions.bofa_gmail_thread_id (+ raw_json["thread_id"]).
+    txns = scan_messages(fake_gmail, lookback_days=7)
+    assert all(t.thread_id for t in txns)
+    card = next(t for t in txns if t.schema == SCHEMA_CARD)
+    assert card.thread_id == "tCARD"
+    used = [t for t in txns if t.schema == SCHEMA_DEBITCARD_USED]
+    assert used and all(t.thread_id == "tUSED" for t in used)
+
+    session = FakeSession()
+    insert_transactions(session, txns)
+    stored = list(session.store.values())
+    card_row = next(r for r in stored if r.raw_json.get("schema") == SCHEMA_CARD)
+    assert card_row.bofa_gmail_thread_id == "tCARD"
+    assert card_row.raw_json["thread_id"] == "tCARD"

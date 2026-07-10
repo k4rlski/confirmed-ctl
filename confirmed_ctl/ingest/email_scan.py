@@ -219,6 +219,11 @@ class EmailTxn:
     schema: str
     block_index: int | None = None
     direction: str = "debit"
+    # Gmail thread id of the source BofA alert (from the message stub's
+    # ``threadId``). Persisted to ``bank_transactions.bofa_gmail_thread_id`` so
+    # the modal can deep-link the alert email. ``None`` when the caller did not
+    # supply it (e.g. older parse paths / tests).
+    thread_id: str | None = None
     raw: dict = field(default_factory=dict)
 
     @property
@@ -356,7 +361,11 @@ def _clean_type(value: str | None) -> str | None:
 
 
 def parse_paired(
-    html: str, schema: str, message_id: str, fallback_date: date | None
+    html: str,
+    schema: str,
+    message_id: str,
+    fallback_date: date | None,
+    thread_id: str | None = None,
 ) -> EmailTxn | None:
     """Parse a single-transaction alert from paired HTML cells using ``schema``.
 
@@ -399,6 +408,7 @@ def parse_paired(
         message_id=message_id,
         schema=schema,
         block_index=None,
+        thread_id=thread_id,
         raw={
             "schema": schema,
             "merchant_raw": _first(field_map, spec.get("merchant", ())),
@@ -428,7 +438,10 @@ def _split_pair_blocks(
 
 
 def parse_debitcard_used(
-    html: str, message_id: str, fallback_date: date | None
+    html: str,
+    message_id: str,
+    fallback_date: date | None,
+    thread_id: str | None = None,
 ) -> list[EmailTxn]:
     """Parse the SCHEMA-DEBITCARD-USED alert (single OR batched). # REFINE.
 
@@ -482,6 +495,7 @@ def parse_debitcard_used(
                 message_id=message_id,
                 schema=SCHEMA_DEBITCARD_USED,
                 block_index=(i if multi else None),
+                thread_id=thread_id,
                 raw={"schema": SCHEMA_DEBITCARD_USED, "block_index": i},
             )
         )
@@ -489,20 +503,26 @@ def parse_debitcard_used(
 
 
 def parse_message(
-    html: str, subject: str, message_id: str, fallback_date: date | None
+    html: str,
+    subject: str,
+    message_id: str,
+    fallback_date: date | None,
+    thread_id: str | None = None,
 ) -> list[EmailTxn]:
     """Route a message (raw HTML) to its schema parser. Returns 0..N txns.
 
     Classification is by case-insensitive SUBSTRING match of the RAW ``Subject``
-    header against ``SUBJECT_ROUTES``.
+    header against ``SUBJECT_ROUTES``. ``thread_id`` (the Gmail alert thread) is
+    threaded onto every produced ``EmailTxn`` so it lands on
+    ``bank_transactions.bofa_gmail_thread_id`` at insert.
     """
     schema = schema_for_subject(subject)
     if schema is None:
         log.warning("email-scan unroutable subject for %s: %r", message_id, subject)
         return []
     if schema == SCHEMA_DEBITCARD_USED:
-        return parse_debitcard_used(html, message_id, fallback_date)
-    txn = parse_paired(html, schema, message_id, fallback_date)
+        return parse_debitcard_used(html, message_id, fallback_date, thread_id)
+    txn = parse_paired(html, schema, message_id, fallback_date, thread_id)
     return [txn] if txn else []
 
 
@@ -524,8 +544,10 @@ def _to_model(txn: EmailTxn):
         vendor_name=merchant,
         private_note=f"BofA alert ({txn.schema})",
         line_descriptions=[merchant] if merchant else None,
+        bofa_gmail_thread_id=txn.thread_id,
         raw_json={
             "message_id": txn.message_id,
+            "thread_id": txn.thread_id,
             "schema": txn.schema,
             "block_index": txn.block_index,
             "merchant": txn.merchant,
@@ -639,12 +661,15 @@ def scan_messages(service, lookback_days: int, today: date | None = None) -> lis
     all_txns: list[EmailTxn] = []
     for stub in gmail_client.search_messages(service, query):
         msg_id = stub["id"]
+        # The message stub carries {id, threadId}; capture the alert thread so
+        # the modal can deep-link the BofA email (persisted per row at insert).
+        thread_id = stub.get("threadId")
         message = gmail_client.get_message(service, msg_id)
         headers = gmail_client.get_headers(message)
         subject = headers.get("subject", "")
         html = gmail_client.get_html_body(message)
         fallback = _message_date(message)
-        parsed = parse_message(html, subject, msg_id, fallback)
+        parsed = parse_message(html, subject, msg_id, fallback, thread_id)
         if parsed:
             all_txns.extend(parsed)
         else:
