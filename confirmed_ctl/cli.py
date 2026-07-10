@@ -92,9 +92,12 @@ def receipt():
 
 def _print_receipt_result(result, *, dry_run):
     verb = "would download" if dry_run else "downloaded"
+    # dry-run never writes files (downloaded/saved stay 0), so report the
+    # aggregate would_download count; a real run reports files actually written.
+    count = result["would_download"] if dry_run else result["downloaded"]
     click.echo(
         f"pending={result['pending']} ads_updated={result['processed']} "
-        f"{verb}={result['downloaded']} skipped={result['skipped']}"
+        f"{verb}={count} skipped={result['skipped']}"
     )
     for d in result["details"]:
         tag = d.get("ad_number") or d.get("ad_crm_id")

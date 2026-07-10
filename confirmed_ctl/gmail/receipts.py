@@ -134,18 +134,31 @@ def classify_attachment(
 ) -> tuple[bool, str]:
     """Decide whether one attachment is a receipt to download.
 
-    Returns ``(accepted, reason)``. Order matters: non-PDFs and denylisted
-    documents are rejected BEFORE the receipt-keyword check so an "invoice
-    receipt.pdf" is still rejected as an invoice.
+    Returns ``(accepted, reason)``. Order matters:
+    1. Non-PDFs are rejected.
+    2. A denylisted FILENAME (``invoice.pdf``) is always rejected — the filename
+       is the strongest per-attachment signal, so an "invoice receipt.pdf" is
+       still rejected as an invoice.
+    3. A receipt-keyword FILENAME (``receipt.pdf``) is always accepted, even when
+       the message subject mentions an invoice/proof (a common mixed thread).
+    4. Only THEN does the message subject/body denylist apply — so a generically
+       named PDF sitting in an invoice/proof thread is rejected by context.
     """
     if not _is_pdf(filename, mime_type):
         return False, "not_pdf"
-    # Denylist checks filename + subject (the strongest signals of doc type).
-    if _text_has_any(f"{filename or ''} {subject or ''}", DENY_KEYWORDS):
+    fname = filename or ""
+    # (2) Filename denylist wins over everything (invoice.pdf, proof.pdf, …).
+    if _text_has_any(fname, DENY_KEYWORDS):
         return False, "denylist"
+    # (3) A receipt-named file is accepted regardless of thread context.
+    if _text_has_word(fname, RECEIPT_KEYWORDS):
+        return True, "receipt_keyword"
+    # (4) Otherwise the surrounding subject/body can still disqualify the file.
+    if _text_has_any(subject or "", DENY_KEYWORDS):
+        return False, "denylist_context"
     if not require_keyword:
         return True, "pdf_not_denylisted"
-    if _text_has_word(f"{filename or ''} {subject or ''} {body or ''}", RECEIPT_KEYWORDS):
+    if _text_has_word(f"{subject or ''} {body or ''}", RECEIPT_KEYWORDS):
         return True, "receipt_keyword"
     return False, "no_receipt_keyword"
 
@@ -352,6 +365,7 @@ def process_pending_receipts(
         "pending": len(pending),
         "processed": 0,
         "downloaded": 0,
+        "would_download": 0,
         "skipped": 0,
         "errors": [],
         "details": [],
@@ -381,6 +395,7 @@ def process_pending_receipts(
             saved = r["saved"]
             present = r.get("present", [])
             results["downloaded"] += len(saved)
+            results["would_download"] += len(r.get("would_download", []))
             results["skipped"] += len(r["skipped"])
             # On-disk receipts for this ad = newly saved + pre-existing (dedup).
             # Setting the path from ``present`` too recovers ads whose file was
@@ -388,8 +403,9 @@ def process_pending_receipts(
             on_disk = saved + present
             if on_disk and not dry_run:
                 conf.receipt_file_path = on_disk[0]
-                if len(on_disk) > 1:
-                    conf.receipt_url = ",".join(on_disk)
+                # Always mirror the on-disk path(s) into receipt_url (schema/RAG
+                # contract), comma-joined when a thread yields multiple PDFs.
+                conf.receipt_url = ",".join(on_disk)
                 results["processed"] += 1
         except Exception as e:  # noqa: BLE001 - per-ad isolation; keep going
             log.exception("receipt download failed for ad_crm_id=%s", conf.ad_crm_id)

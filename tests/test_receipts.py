@@ -45,11 +45,23 @@ def test_rejects_invoice_proof_tearsheet_by_denylist():
 
 def test_denylist_wins_over_receipt_keyword_in_body():
     # "invoice" in the subject beats "receipt" in the body — it's still a bill.
+    # A generically named PDF is rejected by the message-context denylist.
     ok, reason = rc.classify_attachment(
         "document.pdf", "application/pdf", "Your invoice", "receipt receipt receipt"
     )
     assert ok is False
-    assert reason == "denylist"
+    assert reason == "denylist_context"
+
+
+def test_receipt_filename_accepted_despite_invoice_subject():
+    # A file literally named receipt.pdf must NOT be blocked by an invoice/proof
+    # subject (common mixed thread) — the filename is the strongest signal.
+    for subj in ("Your invoice for June", "Ad proof + receipt attached", "tearsheet"):
+        ok, reason = rc.classify_attachment(
+            "receipt.pdf", "application/pdf", subj, ""
+        )
+        assert ok is True, subj
+        assert reason == "receipt_keyword", subj
 
 
 def test_pdf_without_keyword_rejected_in_strict_mode():
