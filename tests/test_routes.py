@@ -485,6 +485,7 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
         ad_crm_id="B", ad_number="AD-B", bank_txn_id=12,
         gmail_thread_id="thrB",
         confirmed_at=datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc),
+        receipt_file_path="/var/lib/confirmed-ctl/receipts/2026/06/AD-B/receipt.pdf",
     )
     txn_a = BankTransaction(id=11, source="email-scan", source_txn_id="a",
                             txn_date=date(2026, 6, 2), total_amount=-100.0,
@@ -518,6 +519,12 @@ def test_reconciled_shape_ordering_and_only_reconciled(client, monkeypatch):
     # BofA-alert deep link for the mapped bank txn (from bofa_gmail_thread_id).
     assert ad_a["bofa_gmail_url"].endswith("#all/bofaA")
     assert ad_a["confirmed_at"].startswith("2026-06-05")
+    # Receipt integration: A has no receipt, B has one.
+    assert ad_a["has_receipt"] is False
+    assert ad_a["receipt_file_path"] is None
+    ad_b = next(a for a in data["ads"] if a["crm_id"] == "B")
+    assert ad_b["has_receipt"] is True
+    assert ad_b["receipt_file_path"].endswith("AD-B/receipt.pdf")
 
 
 def test_reconciled_none_safe_when_no_bank_txn(client, monkeypatch):

@@ -96,8 +96,10 @@ EMAIL_SCAN_LOOKBACK_DAYS = int(_get("EMAIL_SCAN_LOOKBACK_DAYS", "2"))
 MATCH_LOOKBACK_DAYS = _get_int("CONFIRMED_CTL_MATCH_LOOKBACK_DAYS", 10)
 MATCH_LOOKAHEAD_DAYS = _get_int("CONFIRMED_CTL_MATCH_LOOKAHEAD_DAYS", 10)
 
-# Receipts + RAG storage
-RECEIPTS_BASE_PATH = _get("RECEIPTS_BASE_PATH", "/mnt/receipts")
+# Receipts + RAG storage. Default is a real on-host data dir (NOT the old
+# placeholder /mnt/receipts, which was never provisioned); override per host via
+# the RECEIPTS_BASE_PATH env. Receipt PDFs are laid out as <base>/<YYYY>/<MM>/<ad>.
+RECEIPTS_BASE_PATH = _get("RECEIPTS_BASE_PATH", "/var/lib/confirmed-ctl/receipts")
 CHROMA_PATH = _get("CHROMA_PATH", "/opt/confirmed-ctl/chroma_db")
 
 # Daemon

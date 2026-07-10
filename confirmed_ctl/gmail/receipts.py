@@ -1,105 +1,362 @@
-"""confirmed_ctl/gmail/receipts.py  (receipt-ctl core logic)
+"""confirmed_ctl/gmail/receipts.py  (receipt-ctl core logic — confirmed-ctl half)
 
-Given a Gmail thread ID, download all attachments (PDFs, images)
-and save them to the local receipts directory.
-Update the ad_confirmations record with the file path.
+The confirmed-ctl / ad-buy half of receipt-ctl: given a CONFIRMED ad's Gmail
+ad-confirmation thread, find and download the **receipt** PDF(s) attached to that
+thread and record the local path on the ``ad_confirmations`` row.
 
-Note: this is the lightweight in-suite downloader. The standalone ``receipt-ctl``
-tool (docs/RECEIPT-CTL.md) supersedes this with dedup, cloud storage, and its own
-audit tables; this stays here for the ``confirmed-ctl receipts`` convenience path.
+Scope (deliberately narrow):
+
+- Only CONFIRMED ads — ``ad_confirmations`` rows that already have a
+  ``gmail_thread_id`` set AND a NULL ``receipt_file_path``. We never scan mail
+  for un-reconciled ads.
+- Only the AD-CONFIRMATION thread (``ad_confirmations.gmail_thread_id``) — NEVER
+  the BofA transaction-alert thread (that lives on ``bank_transactions`` and is a
+  different email entirely).
+
+Detection (receipts, NOT invoices/proofs/tearsheets):
+
+- Attachment must be a PDF (``application/pdf`` mime OR ``.pdf``/``.PDF`` name).
+- A denylist rejects invoices / ad-proofs / tearsheets / estimates / statements
+  by filename or subject even if the body mentions "receipt".
+- Default (strict) mode also requires the keyword ``receipt`` in the filename,
+  subject, or body. ``require_keyword=False`` loosens to "any non-denylisted PDF"
+  — the grab-all mitigation for threads whose receipt PDF is not named/worded
+  "receipt" (use only after a strict dry-run yields 0 hits on a known thread).
+
+Safety:
+
+- Gmail access is READ-ONLY (``gmail.readonly`` via the shared service client).
+- Multipart bodies are walked RECURSIVELY (BofA/vendor mail nests attachments
+  below ``multipart/*`` wrappers, which the old top-level-only walk missed).
+- Files are de-duplicated by SHA-256 content hash within an ad's receipt dir, so
+  re-running never writes a second copy of the same PDF.
+
+The standalone ``receipt-ctl`` tool (the vendor-portal scraper in
+``core-v5/receipt-ctl``) is a SEPARATE, later effort for the vendor-ctl half;
+this module is the in-suite confirmed-ctl downloader only.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import settings
 from .client import get_gmail_service
 
+log = logging.getLogger(__name__)
 
-def download_receipt(
+# Keyword that marks a document as a receipt (strict mode). Lower-cased match.
+RECEIPT_KEYWORDS = ("receipt", "paid", "payment received")
+
+# Filename/subject markers that are NEVER receipts — reject even if "receipt"
+# appears elsewhere. Ad proofs and tearsheets are ad EVIDENCE, not payment proof;
+# invoices/estimates/statements are bills, not receipts.
+DENY_KEYWORDS = (
+    "invoice",
+    "proof",
+    "tearsheet",
+    "tear sheet",
+    "tear-sheet",
+    "estimate",
+    "quote",
+    "statement",
+    "insertion order",
+)
+
+
+@dataclass
+class AttachmentHit:
+    """One attachment considered for download (accepted or not)."""
+
+    message_id: str
+    filename: str
+    mime_type: str
+    attachment_id: str
+    accepted: bool
+    reason: str
+
+
+@dataclass
+class ThreadScan:
+    """Result of scanning one ad-confirmation thread (no download)."""
+
+    thread_id: str
+    hits: list[AttachmentHit] = field(default_factory=list)
+
+    @property
+    def accepted(self) -> list[AttachmentHit]:
+        return [h for h in self.hits if h.accepted]
+
+
+# --------------------------------------------------------------------------- #
+# Detection helpers (pure — unit-tested without Gmail)
+# --------------------------------------------------------------------------- #
+def _is_pdf(filename: str | None, mime_type: str | None) -> bool:
+    if mime_type and "pdf" in mime_type.lower():
+        return True
+    return bool(filename) and filename.lower().endswith(".pdf")
+
+
+def _text_has_any(text: str | None, keywords: tuple[str, ...]) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in keywords)
+
+
+def classify_attachment(
+    filename: str | None,
+    mime_type: str | None,
+    subject: str | None,
+    body: str | None,
+    *,
+    require_keyword: bool = True,
+) -> tuple[bool, str]:
+    """Decide whether one attachment is a receipt to download.
+
+    Returns ``(accepted, reason)``. Order matters: non-PDFs and denylisted
+    documents are rejected BEFORE the receipt-keyword check so an "invoice
+    receipt.pdf" is still rejected as an invoice.
+    """
+    if not _is_pdf(filename, mime_type):
+        return False, "not_pdf"
+    # Denylist checks filename + subject (the strongest signals of doc type).
+    if _text_has_any(f"{filename or ''} {subject or ''}", DENY_KEYWORDS):
+        return False, "denylist"
+    if not require_keyword:
+        return True, "pdf_not_denylisted"
+    if _text_has_any(f"{filename or ''} {subject or ''} {body or ''}", RECEIPT_KEYWORDS):
+        return True, "receipt_keyword"
+    return False, "no_receipt_keyword"
+
+
+def _walk_parts(payload: dict):
+    """Yield every MIME part with a filename + attachmentId, RECURSIVELY.
+
+    Parts are yielded in document order (depth-first) so downloads/dedup are
+    deterministic regardless of nesting depth.
+    """
+    part = payload or {}
+    if part.get("filename") and part.get("body", {}).get("attachmentId"):
+        yield part
+    for sub in part.get("parts", []) or []:
+        yield from _walk_parts(sub)
+
+
+def _message_subject(message: dict) -> str:
+    for h in message.get("payload", {}).get("headers", []) or []:
+        if h.get("name", "").lower() == "subject":
+            return h.get("value", "") or ""
+    return ""
+
+
+def _message_text(payload: dict) -> str:
+    """Concatenate decoded text/* part bodies (for keyword scanning only)."""
+    texts: list[str] = []
+    stack = [payload or {}]
+    while stack:
+        part = stack.pop()
+        for sub in part.get("parts", []) or []:
+            stack.append(sub)
+        if str(part.get("mimeType", "")).startswith("text/"):
+            data = part.get("body", {}).get("data")
+            if data:
+                try:
+                    texts.append(base64.urlsafe_b64decode(data).decode("utf-8", "ignore"))
+                except Exception:  # noqa: BLE001 - best-effort keyword scan only
+                    pass
+    return " ".join(texts)
+
+
+# --------------------------------------------------------------------------- #
+# Gmail-backed scan / download
+# --------------------------------------------------------------------------- #
+def scan_thread(service, thread_id: str, *, require_keyword: bool = True) -> ThreadScan:
+    """Classify every attachment in an ad-confirmation thread (NO download)."""
+    thread = (
+        service.users()
+        .threads()
+        .get(userId="me", id=thread_id, format="full")
+        .execute()
+    )
+    scan = ThreadScan(thread_id=thread_id)
+    for message in thread.get("messages", []):
+        payload = message.get("payload", {})
+        subject = _message_subject(message)
+        body = _message_text(payload)
+        for part in _walk_parts(payload):
+            accepted, reason = classify_attachment(
+                part.get("filename"),
+                part.get("mimeType"),
+                subject,
+                body,
+                require_keyword=require_keyword,
+            )
+            scan.hits.append(
+                AttachmentHit(
+                    message_id=message["id"],
+                    filename=part.get("filename") or "",
+                    mime_type=part.get("mimeType") or "",
+                    attachment_id=part["body"]["attachmentId"],
+                    accepted=accepted,
+                    reason=reason,
+                )
+            )
+    return scan
+
+
+def _existing_hashes(save_dir: Path) -> dict[str, str]:
+    """Map sha256 -> path for PDFs already in ``save_dir`` (dedup baseline)."""
+    hashes: dict[str, str] = {}
+    if not save_dir.exists():
+        return hashes
+    for p in save_dir.iterdir():
+        if p.is_file():
+            try:
+                hashes[hashlib.sha256(p.read_bytes()).hexdigest()] = str(p)
+            except OSError:
+                continue
+    return hashes
+
+
+def _dedupe_name(save_dir: Path, filename: str) -> Path:
+    """Return a non-colliding path (append -1, -2, … before the extension)."""
+    target = save_dir / filename
+    if not target.exists():
+        return target
+    stem, dot, ext = filename.rpartition(".")
+    stem = stem or filename
+    i = 1
+    while True:
+        candidate = save_dir / (f"{stem}-{i}.{ext}" if dot else f"{filename}-{i}")
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def download_thread_receipts(
+    service,
     thread_id: str,
     ad_number: str,
     year: str,
     month: str,
-) -> list[str]:
+    *,
+    require_keyword: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """Download the accepted receipt PDFs from one thread. SHA-256 de-duplicated.
+
+    Returns ``{saved: [paths], skipped: [{filename, reason}], scanned: N}``.
+    ``dry_run`` classifies and reports without touching disk.
     """
-    Download all attachments from a Gmail thread.
-    Returns list of saved file paths.
-    """
-    service = get_gmail_service()
-    thread = service.users().threads().get(
-        userId="me", id=thread_id, format="full"
-    ).execute()
+    scan = scan_thread(service, thread_id, require_keyword=require_keyword)
+    result: dict = {"saved": [], "skipped": [], "scanned": len(scan.hits)}
+
+    for hit in scan.hits:
+        if not hit.accepted:
+            result["skipped"].append({"filename": hit.filename, "reason": hit.reason})
+
+    if dry_run:
+        return result
 
     save_dir = Path(settings.RECEIPTS_BASE_PATH) / year / month / ad_number
     save_dir.mkdir(parents=True, exist_ok=True)
+    seen = _existing_hashes(save_dir)
 
-    saved_paths = []
+    for hit in scan.accepted:
+        attachment = (
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=hit.message_id, id=hit.attachment_id)
+            .execute()
+        )
+        file_data = base64.urlsafe_b64decode(attachment["data"])
+        digest = hashlib.sha256(file_data).hexdigest()
+        if digest in seen:
+            result["skipped"].append(
+                {"filename": hit.filename, "reason": "duplicate_sha256"}
+            )
+            continue
+        filename = hit.filename or f"receipt_{hit.message_id}.pdf"
+        file_path = _dedupe_name(save_dir, filename)
+        with open(file_path, "wb") as f:
+            f.write(file_data)
+        seen[digest] = str(file_path)
+        result["saved"].append(str(file_path))
 
-    for message in thread.get("messages", []):
-        parts = message.get("payload", {}).get("parts", [])
-        for part in parts:
-            if part.get("filename") and part.get("body", {}).get("attachmentId"):
-                attachment = service.users().messages().attachments().get(
-                    userId="me",
-                    messageId=message["id"],
-                    id=part["body"]["attachmentId"],
-                ).execute()
-
-                file_data = base64.urlsafe_b64decode(attachment["data"])
-                file_name = part["filename"] or f"receipt_{message['id']}.pdf"
-                file_path = save_dir / file_name
-
-                with open(file_path, "wb") as f:
-                    f.write(file_data)
-
-                saved_paths.append(str(file_path))
-
-    return saved_paths
+    return result
 
 
-def process_pending_receipts(db_session) -> dict:
-    """
-    Batch job: find all confirmed ads with a gmail_thread_id but no receipt_file_path.
-    Download receipts for each. Called by cron or CLI.
+def process_pending_receipts(
+    db_session,
+    *,
+    ad_crm_id: str | None = None,
+    require_keyword: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """Download receipts for confirmed ads missing a ``receipt_file_path``.
+
+    Scope: ``ad_confirmations`` with ``gmail_thread_id`` set AND
+    ``receipt_file_path`` NULL (optionally narrowed to one ``ad_crm_id``). Uses
+    the AD-CONFIRMATION thread only. On success writes ``receipt_file_path`` (the
+    first PDF) and ``receipt_url`` (comma-joined when multiple). ``dry_run``
+    reports classifications without downloading or writing the DB.
     """
     from ..db.models import AdConfirmation
 
-    pending = (
-        db_session.query(AdConfirmation)
-        .filter(
-            AdConfirmation.gmail_thread_id.isnot(None),
-            AdConfirmation.receipt_file_path.is_(None),
-        )
-        .all()
+    q = db_session.query(AdConfirmation).filter(
+        AdConfirmation.gmail_thread_id.isnot(None),
+        AdConfirmation.receipt_file_path.is_(None),
     )
+    if ad_crm_id:
+        q = q.filter(AdConfirmation.ad_crm_id == ad_crm_id)
+    pending = q.all()
 
-    results = {"processed": 0, "errors": []}
+    results: dict = {
+        "pending": len(pending),
+        "processed": 0,
+        "downloaded": 0,
+        "skipped": 0,
+        "errors": [],
+        "details": [],
+    }
+    if not pending:
+        return results
 
+    service = get_gmail_service()
     for conf in pending:
         try:
             confirmed_date = conf.confirmed_at
-            year = str(confirmed_date.year)
-            month = f"{confirmed_date.month:02d}"
-
-            paths = download_receipt(
+            year = str(confirmed_date.year) if confirmed_date else "unknown"
+            month = f"{confirmed_date.month:02d}" if confirmed_date else "00"
+            r = download_thread_receipts(
+                service,
                 thread_id=conf.gmail_thread_id,
-                # Ad is referenced logically (no ORM relationship): prefer the
-                # human ad number, fall back to the CRM record id.
+                # Ad is referenced logically; prefer the human ad number.
                 ad_number=conf.ad_number or conf.ad_crm_id,
                 year=year,
                 month=month,
+                require_keyword=require_keyword,
+                dry_run=dry_run,
             )
-
-            if paths:
-                conf.receipt_file_path = paths[0]           # Primary receipt
-                conf.receipt_url = ",".join(paths)          # All if multiple
+            results["details"].append(
+                {"ad_crm_id": conf.ad_crm_id, "ad_number": conf.ad_number, **r}
+            )
+            saved = r["saved"]
+            results["downloaded"] += len(saved)
+            results["skipped"] += len(r["skipped"])
+            if saved and not dry_run:
+                conf.receipt_file_path = saved[0]
+                if len(saved) > 1:
+                    conf.receipt_url = ",".join(saved)
                 results["processed"] += 1
+        except Exception as e:  # noqa: BLE001 - per-ad isolation; keep going
+            log.exception("receipt download failed for ad_crm_id=%s", conf.ad_crm_id)
+            results["errors"].append(f"{conf.ad_crm_id}: {e}")
 
-        except Exception as e:
-            results["errors"].append(f"Confirmation {conf.id}: {str(e)}")
-
-    db_session.commit()
+    if not dry_run:
+        db_session.commit()
     return results

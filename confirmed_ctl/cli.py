@@ -64,14 +64,92 @@ def status():
 
 @cli.command()
 def receipts():
-    """Download receipts for all confirmed ads that have a Gmail thread ID."""
+    """Download receipts for all confirmed ads that have a Gmail thread ID.
+
+    Back-compat alias for ``receipt download-receipts`` (strict keyword mode).
+    """
     click.echo("Processing pending receipts...")
     with get_db() as db:
         result = process_pending_receipts(db)
-    click.echo(f"Done: {result['processed']} receipts downloaded.")
+    click.echo(
+        f"Done: {result['processed']} ads updated, "
+        f"{result['downloaded']} files downloaded, {result['skipped']} skipped."
+    )
     if result["errors"]:
         for e in result["errors"]:
             click.echo(f"  Error: {e}")
+
+
+@cli.group()
+def receipt():
+    """Receipt-CTL (confirmed-ctl / ad-buy half): pull receipt PDFs from the
+    ad-confirmation Gmail thread of CONFIRMED ads and record them on
+    ``ad_confirmations``. Read-only against Gmail; the BofA alert thread is never
+    touched. The vendor-portal scraper half lives in the standalone receipt-ctl.
+    """
+    pass
+
+
+def _print_receipt_result(result, *, dry_run):
+    verb = "would download" if dry_run else "downloaded"
+    click.echo(
+        f"pending={result['pending']} ads_updated={result['processed']} "
+        f"{verb}={result['downloaded']} skipped={result['skipped']}"
+    )
+    for d in result["details"]:
+        tag = d.get("ad_number") or d.get("ad_crm_id")
+        if d["saved"]:
+            click.echo(f"  [{tag}] {verb}: " + ", ".join(d["saved"]))
+        for s in d["skipped"]:
+            click.echo(f"  [{tag}] skip {s['filename']!r} ({s['reason']})")
+    for e in result["errors"]:
+        click.echo(f"  Error: {e}", err=True)
+
+
+@receipt.command("gmail-scan")
+@click.option("--ad-crm-id", default=None, help="Limit to one CRM ad id")
+@click.option("--loose", is_flag=True, help="Accept any non-denylisted PDF (no keyword)")
+def receipt_gmail_scan(ad_crm_id, loose):
+    """DRY-RUN: classify attachments on pending ad-confirmation threads.
+
+    Downloads nothing and writes nothing — reports which attachments WOULD be
+    accepted as receipts vs skipped (and why). Use before a real download.
+    """
+    with get_db() as db:
+        result = process_pending_receipts(
+            db, ad_crm_id=ad_crm_id, require_keyword=not loose, dry_run=True
+        )
+    _print_receipt_result(result, dry_run=True)
+
+
+@receipt.command("download-receipts")
+@click.option("--ad-crm-id", default=None, help="Limit to one CRM ad id")
+@click.option("--loose", is_flag=True, help="Accept any non-denylisted PDF (no keyword)")
+@click.option("--dry-run", is_flag=True, help="Classify only; do not write files/DB")
+def receipt_download(ad_crm_id, loose, dry_run):
+    """Download accepted receipt PDFs and record ``receipt_file_path``.
+
+    Scope: confirmed ads with a Gmail thread and no receipt yet. SHA-256
+    de-duplicated on disk. Pass ``--ad-crm-id`` to process a single ad first.
+    """
+    with get_db() as db:
+        result = process_pending_receipts(
+            db, ad_crm_id=ad_crm_id, require_keyword=not loose, dry_run=dry_run
+        )
+    _print_receipt_result(result, dry_run=dry_run)
+
+
+@receipt.command("xfer-receipts")
+def receipt_xfer():
+    """Transfer stored receipts to the Dropbox case tree (NOT YET IMPLEMENTED).
+
+    The Dropbox transfer is deferred (non-goal this cycle); receipts currently
+    live under ``RECEIPTS_BASE_PATH`` on fang and are referenced from Postgres.
+    """
+    click.echo(
+        "xfer-receipts is not implemented yet — Dropbox transfer is deferred. "
+        "Receipts live under RECEIPTS_BASE_PATH on fang (Postgres holds the path)."
+    )
 
 
 @cli.group()
