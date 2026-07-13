@@ -416,6 +416,14 @@ confirmed-ctl ignore backfill            # flag existing rows matching an active
     `gunicorn -b ${CONFIRMED_CTL_API_BIND} -w 2 --timeout 60 --access-logfile - confirmed_ctl.wsgi:app`
     (default bind `127.0.0.1:8787`). After `postgresql.service`.
   - `confirmed-ctl.service` — ingestion daemon: `python -m confirmed_ctl.daemon`.
+- **⚠️ Install BOTH units.** A deploy that installs only `confirmed-ctl-api.service`
+  leaves the API serving stale data forever: with no daemon (and no timer/cron running
+  `confirmed-ctl sync`) `bank_transactions` never refreshes, so Map Trx shows stale,
+  non-matchable candidates. Verify after deploy: `systemctl is-active confirmed-ctl`
+  (must be `active`) and `confirmed-ctl status` (Last sync should be recent). This exact
+  gap froze fang ingest 2026-07-08 → 2026-07-13 (confirmed-ctl#36); fixed by
+  `cp /opt/confirmed-ctl/confirmed-ctl.service /etc/systemd/system/ && systemctl
+  daemon-reload && systemctl enable --now confirmed-ctl.service`.
 - **Networking:** localhost-only bind; **claw/MARS reaches the API over an SSH tunnel**.
   MARS admin page `/adm/confirmed-ctl-adm` (claw `static/confirmed-ctl-adm.html` +
   `routes/confirmed_ctl_adm_bp.py`) proxies `/api/confirmed-ctl/*` to fang.
