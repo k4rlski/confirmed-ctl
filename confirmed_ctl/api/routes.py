@@ -757,6 +757,120 @@ def list_reconciled():
     return jsonify({"count": len(ads_out), "ads": ads_out})
 
 
+@confirmed_ctl_bp.route("/suggested", methods=["GET"])
+def list_suggested():
+    """Return high-confidence, NOT-yet-confirmed ad <-> bank txn suggestions.
+
+    This is the bulk, precomputed companion to ``/candidates/<ad_crm_id>``: it
+    scores EVERY unconfirmed clearance ad (the same set ``/unconfirmed`` returns)
+    against the unmatched bank transactions and surfaces the best bank pair per
+    ad whose score clears ``min_score``. It deliberately does NOT do the Gmail
+    thread search that ``/candidates`` does — this endpoint is a cheap ranking
+    over local Postgres bank rows so the reconcile page can show an at-a-glance
+    "these look ready to map" list without N per-ad round-trips (and N Gmail
+    API calls).
+
+    READ-ONLY: it never writes to Postgres or the CRM and creates NO new tables.
+    The actual mapping still happens through the existing Map Trx modal ->
+    ``/confirm`` flow; a suggestion is only a ranked hint, never an auto-confirm.
+
+    Query params:
+      - ``min_score`` (float, default 0.6, clamped to [0, 1]): the minimum scorer
+        score for a pair to be suggested. A strong amount + date match scores
+        ~0.6 even without a vendor-name match, so 0.6 is the "worth a look"
+        floor; the UI can request a higher bar.
+      - ``limit`` (int, default 200): cap on suggestions returned.
+
+    Same CRM-availability contract as ``/unconfirmed`` (503 not configured / 502
+    unreachable). Each suggestion carries the ad identity (via the shared
+    ``_crm_ad_to_dict`` serializer) plus the suggested bank txn's identifying
+    fields, the score, and ``alt_count`` = how many OTHER bank txns also cleared
+    ``min_score`` for that ad (so the operator can see when a suggestion is
+    ambiguous). Sorted by score DESC.
+    """
+    if not crm_client.is_configured():
+        return jsonify({
+            "status": "crm_not_configured",
+            "detail": (
+                "CRM not configured: set CRM_DB_HOST (and CRM_DB_USER/PASS/NAME) "
+                "to enable the read-only permtrak2_crm.t_e_s_t_p_e_r_m adapter."
+            ),
+        }), 503
+
+    # Parse + clamp query params (robust to junk input).
+    try:
+        min_score = float(request.args.get("min_score", 0.6))
+    except (TypeError, ValueError):
+        min_score = 0.6
+    min_score = max(0.0, min(1.0, min_score))
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(1000, limit))
+
+    try:
+        clearances = crm_client.list_clearances()
+    except Exception:
+        logger.exception("CRM list_clearances failed (suggested)")
+        return jsonify({
+            "status": "crm_unavailable",
+            "detail": "CRM lookup failed; the CRM is unreachable or misconfigured.",
+        }), 502
+
+    suggestions: list[dict] = []
+    with get_db() as db:
+        confirmed_ids = {
+            row[0] for row in db.query(AdConfirmation.ad_crm_id).all()
+        }
+        unconfirmed = [ad for ad in clearances if ad.crm_id not in confirmed_ids]
+
+        for ad in unconfirmed:
+            # Reuse the SAME scorer + consumed/ignored-exclusion invariant as the
+            # per-ad popup. top_n is small; we only need the best + a count of
+            # other qualifying candidates for the ambiguity hint.
+            try:
+                scored = get_candidate_transactions(db, ad, top_n=8)
+            except Exception:
+                logger.exception(
+                    "suggested scoring failed for ad_crm_id=%s", ad.crm_id
+                )
+                continue
+            qualifying = [c for c in scored if c["score"] >= min_score]
+            if not qualifying:
+                continue
+            best = qualifying[0]  # get_candidate_transactions already sorts DESC
+            txn = best["transaction"]
+            item = _crm_ad_to_dict(ad)
+            item["suggested_txn"] = {
+                "txn_id": txn.id,
+                "source": txn.source,
+                "source_txn_id": txn.source_txn_id,
+                "txn_date": str(txn.txn_date) if txn.txn_date else None,
+                "amount": (
+                    float(txn.total_amount) if txn.total_amount is not None else None
+                ),
+                "vendor_name": txn.vendor_name,
+                "account_name": txn.account_name,
+                "payment_ref": txn.payment_ref_num,
+                "memo": txn.private_note,
+            }
+            item["score"] = round(best["score"], 3)
+            item["score_pct"] = int(best["score"] * 100)
+            # Other bank txns that also cleared min_score for this ad (ambiguity).
+            item["alt_count"] = len(qualifying) - 1
+            suggestions.append(item)
+
+    suggestions.sort(key=lambda d: d.get("score") or 0.0, reverse=True)
+    suggestions = suggestions[:limit]
+
+    return jsonify({
+        "count": len(suggestions),
+        "min_score": min_score,
+        "suggestions": suggestions,
+    })
+
+
 @confirmed_ctl_bp.route("/bank-transaction/<txn_id>", methods=["GET"])
 def get_bank_transaction(txn_id: str):
     """Read-only detail for a single bank transaction (Bank-Trx modal).
