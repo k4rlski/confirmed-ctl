@@ -230,6 +230,60 @@ def ignore_backfill():
     click.echo(f"Backfill complete: {flagged} bank_transactions newly flagged ignored.")
 
 
+@cli.group()
+def vendors():
+    """Ad-rep <-> bank merchant-string registry (fang Postgres only).
+
+    Seed/inspect the ``ad_reps`` / ``bank_merchant_strings`` /
+    ``ad_rep_merchant_links`` tables. Never touches the CRM.
+    """
+    pass
+
+
+@vendors.command("scan")
+@click.option(
+    "--lookback-days",
+    default=None,
+    type=int,
+    help="Bound the scan to bank txns within N days (default: all).",
+)
+def vendors_scan(lookback_days):
+    """Seed merchant strings from bank_transactions (non-destructive upsert)."""
+    from .vendors import scan_seed_merchant_strings
+
+    with get_db() as db:
+        result = scan_seed_merchant_strings(db, lookback_days=lookback_days)
+        db.commit()
+    click.echo(
+        "vendors scan complete: "
+        f"scanned={result['scanned']} created={result['created']} "
+        f"existing={result['existing']} unlinked={result['unlinked_count']}"
+    )
+
+
+@vendors.command("list")
+def vendors_list():
+    """List reps, merchant strings, and links (id / key)."""
+    from .db.models import AdRep, AdRepMerchantLink, BankMerchantString
+
+    with get_db() as db:
+        reps = db.query(AdRep).order_by(AdRep.id).all()
+        strings = db.query(BankMerchantString).order_by(BankMerchantString.id).all()
+        links = db.query(AdRepMerchantLink).order_by(AdRepMerchantLink.id).all()
+        click.echo(f"# Reps ({len(reps)})")
+        for r in reps:
+            click.echo(f"  {r.id}\t{r.email}\t{r.display_name or ''}\t{r.org or ''}")
+        click.echo(f"# Merchant strings ({len(strings)})")
+        for s in strings:
+            click.echo(f"  {s.id}\t{s.normalized_string}\t[{s.source}]")
+        click.echo(f"# Links ({len(links)})")
+        for lnk in links:
+            click.echo(
+                f"  {lnk.id}\trep={lnk.ad_rep_id}\tstring={lnk.bank_merchant_string_id}"
+                f"\t{lnk.confidence}"
+            )
+
+
 @cli.command()
 @click.option("--ad-crm-id", required=True, help="CRM ad id (EspoCRM record id)")
 def match(ad_crm_id):
