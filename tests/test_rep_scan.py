@@ -58,7 +58,7 @@ class _FakeGmail:
         for mid, _frm in self._messages:
             yield {"id": mid, "threadId": "t-" + mid}
 
-    def get_message(self, service, message_id, fmt="full"):
+    def get_message(self, service, message_id, fmt="full", metadata_headers=None):
         frm = dict(self._messages)[message_id]
         return {"payload": {"headers": [{"name": "From", "value": frm}]}}
 
@@ -101,6 +101,34 @@ def test_scan_rep_messages_harvests_external_only(fake_gmail, monkeypatch):
     # Display name parsed off the header.
     roshanda = next(r for r in reps if r.email == "roshanda.buchanan@mediumgiant.co")
     assert "Buchanan" in roshanda.display_name
+
+
+def test_scan_rep_messages_respects_max_messages(fake_gmail, monkeypatch):
+    """The scan stops after fetching ``max_messages`` (newest-first sample)."""
+    monkeypatch.setattr(settings, "GMAIL_IMPERSONATE", "karl@perm-ads.com")
+    monkeypatch.setattr(settings, "AD_REP_SKIP_DOMAINS", "")
+    fake = fake_gmail([
+        ("m1", "A <a@paper.example>"),
+        ("m2", "B <b@paper.example>"),
+        ("m3", "C <c@paper.example>"),
+    ])
+
+    calls = {"n": 0}
+    orig = fake.get_message
+
+    def _counting(service, message_id, fmt="full", metadata_headers=None):
+        calls["n"] += 1
+        return orig(service, message_id, fmt=fmt, metadata_headers=metadata_headers)
+
+    from confirmed_ctl.gmail import client as gmail_client
+
+    monkeypatch.setattr(gmail_client, "get_message", _counting)
+
+    reps = rep_scan.scan_rep_messages(
+        service=object(), lookback_days=30, max_messages=2
+    )
+    assert calls["n"] == 2  # only two messages fetched despite three matching
+    assert len(reps) == 2
 
 
 # --------------------------------------------------------------------------- #

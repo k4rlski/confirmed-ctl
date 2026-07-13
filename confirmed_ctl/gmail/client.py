@@ -78,14 +78,22 @@ def search_messages(
         time.sleep(0.1)  # rate-limit courtesy
 
 
-def get_message(service, message_id: str, fmt: str = "full") -> dict:
-    """Fetch a full message (headers + body). Read-only."""
-    return (
-        service.users()
-        .messages()
-        .get(userId="me", id=message_id, format=fmt)
-        .execute()
-    )
+def get_message(
+    service,
+    message_id: str,
+    fmt: str = "full",
+    metadata_headers: list[str] | None = None,
+) -> dict:
+    """Fetch a message (headers + body). Read-only.
+
+    ``metadata_headers`` (only meaningful with ``fmt="metadata"``) restricts the
+    returned headers to the named ones (e.g. ``["From"]``), which makes a
+    header-only harvest markedly cheaper than pulling every header/body.
+    """
+    params = {"userId": "me", "id": message_id, "format": fmt}
+    if metadata_headers:
+        params["metadataHeaders"] = metadata_headers
+    return service.users().messages().get(**params).execute()
 
 
 def get_headers(message: dict) -> dict:

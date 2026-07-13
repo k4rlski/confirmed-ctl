@@ -154,15 +154,20 @@ Seed the two catalogs (non-destructive, review-first — NEVER auto-links, never
 - **bank strings** ← `POST /vendor-map/scan` or CLI `confirmed-ctl vendors scan
   [--lookback-days N]` (distinct non-ignored `bank_transactions.vendor_name`).
 - **ad_reps** ← `POST /vendor-map/scan-reps` or CLI `confirmed-ctl vendors scan-reps
-  [--lookback-days N] [--query …]` (`confirmed_ctl/ingest/rep_scan.py`): a read-only Gmail
-  harvest of ad-confirmation **From** headers on the SAME service account / mailbox
-  (`GMAIL_IMPERSONATE`) as the BofA scan. Universe = mailbox in the lookback window MINUS
-  the BofA alert sender (`AD_REP_SCAN_QUERY` overrides the query); internal/bank domains
+  [--lookback-days N] [--query …] [--max-messages N]` (`confirmed_ctl/ingest/rep_scan.py`):
+  a read-only Gmail harvest of ad-confirmation **From** headers on the SAME service account /
+  mailbox (`GMAIL_IMPERSONATE`) as the BofA scan. Universe = mailbox in the lookback window
+  MINUS the BofA alert sender (`AD_REP_SCAN_QUERY` overrides the query); internal/bank domains
   (`perm-ads.com` family + BofA, plus `AD_REP_SKIP_DOMAINS`) are dropped so only EXTERNAL
-  rep addresses upsert. `linked_proposed` is always **0** — links are a human step in the
+  rep addresses upsert. **BOUNDED:** at most `AD_REP_SCAN_MAX_MESSAGES` (default 300) messages
+  are fetched — Gmail returns newest-first, so a broad default query samples the most recent
+  slice rather than fetching thousands one-by-one (each fetch is a round-trip; only the `From`
+  header is requested via `format=metadata`). Narrow `AD_REP_SCAN_QUERY` (e.g. a
+  `label:ad-confirmations` or a set of `from:` clauses) for full coverage of the finite
+  newspaper-charge universe. `linked_proposed` is always **0** — links are a human step in the
   UI (a rep's From domain does not reliably map to a bank merchant string). Result:
-  `{found, upserted, created, existing, linked_proposed}`; a `rep-scan` `SyncLog` row is
-  written each run.
+  `{found, upserted, created, existing, linked_proposed, max_messages}`; a `rep-scan` `SyncLog`
+  row is written each run.
 
 UI: the "Ad rep ↔ bank strings" section on `/adm/confirmed-ctl-adm` (below Suggested
 Matches). NEVER a CRM/permtrak.com object.
@@ -444,6 +449,7 @@ confirmed-ctl vendors scan               # seed bank_merchant_strings from bank_
     [--lookback-days N]                  #   (non-destructive upsert; never auto-links)
 confirmed-ctl vendors scan-reps          # seed ad_reps from ad-confirmation Gmail From headers
     [--lookback-days N] [--query …]      #   (read-only harvest; upserts reps; never links/CRM)
+    [--max-messages N]                   #   (cap fetched msgs; default 300, newest-first)
 confirmed-ctl vendors list               # list reps / merchant strings / links
 
 # Ignore-string management (flag SAAS/vendor charges; flagged, never deleted):

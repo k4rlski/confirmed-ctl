@@ -96,9 +96,14 @@ EMAIL_SCAN_LOOKBACK_DAYS = int(_get("EMAIL_SCAN_LOOKBACK_DAYS", "2"))
 #     label: or a set of from: clauses) once the real rep sender set is known.
 #   AD_REP_SKIP_DOMAINS — extra comma-separated internal domains to drop from the
 #     From harvest (the perm-ads.com family + the bank are always skipped).
+#   AD_REP_SCAN_MAX_MESSAGES — hard cap on messages fetched per scan. Gmail
+#     returns newest-first, so with a broad default query this samples the most
+#     recent slice instead of fetching thousands one-by-one (each is a round-trip).
+#     Narrow AD_REP_SCAN_QUERY for full coverage of the finite charge universe.
 AD_REP_SCAN_LOOKBACK_DAYS = _get_int("AD_REP_SCAN_LOOKBACK_DAYS", 30)
 AD_REP_SCAN_QUERY = _get("AD_REP_SCAN_QUERY", "")
 AD_REP_SKIP_DOMAINS = _get("AD_REP_SKIP_DOMAINS", "")
+AD_REP_SCAN_MAX_MESSAGES = _get_int("AD_REP_SCAN_MAX_MESSAGES", 300)
 
 # Candidate-matching window (days) for the scorer (matching/scorer.py). Bank
 # charges can post before OR after the CRM buy/charge date, so the window spans

@@ -1379,8 +1379,10 @@ def vendor_map_scan_reps():
     by a human in the UI) and NEVER touches the CRM.
 
     Body (all optional): ``lookback_days`` (int, default
-    ``AD_REP_SCAN_LOOKBACK_DAYS``) and ``query`` (Gmail query override). A Gmail
-    failure surfaces as a controlled 502 rather than an unhandled 500.
+    ``AD_REP_SCAN_LOOKBACK_DAYS``), ``query`` (Gmail query override), and
+    ``max_messages`` (int cap on messages fetched, default
+    ``AD_REP_SCAN_MAX_MESSAGES``). A Gmail failure surfaces as a controlled 502
+    rather than an unhandled 500.
     """
     from ..ingest.rep_scan import run_rep_scan
 
@@ -1390,10 +1392,17 @@ def vendor_map_scan_reps():
         lookback = int(lookback) if lookback is not None else None
     except (TypeError, ValueError):
         lookback = None
+    max_messages = body.get("max_messages")
+    try:
+        max_messages = int(max_messages) if max_messages is not None else None
+    except (TypeError, ValueError):
+        max_messages = None
     query = body.get("query") or None
     with get_db() as db:
         try:
-            result = run_rep_scan(db, lookback_days=lookback, query=query)
+            result = run_rep_scan(
+                db, lookback_days=lookback, query=query, max_messages=max_messages
+            )
         except Exception:
             logger.exception("vendor-map scan-reps failed")
             return jsonify({

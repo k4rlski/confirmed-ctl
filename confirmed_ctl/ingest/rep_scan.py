@@ -108,25 +108,43 @@ def scan_rep_messages(
     lookback_days: int,
     query: str | None = None,
     today: date | None = None,
+    max_messages: int | None = None,
 ) -> list[ParsedRep]:
     """Search + fetch From headers + parse; return DISTINCT external ad-reps.
 
     Pure of DB access (so harvesting can be unit-tested offline). Internal /
     bank senders are dropped by :func:`skip_domains`; duplicates collapse on the
     normalized email.
+
+    BOUNDED: at most ``max_messages`` (default ``AD_REP_SCAN_MAX_MESSAGES``)
+    messages are fetched — Gmail returns newest-first, so a broad default query
+    over a busy mailbox samples the most-recent slice rather than fetching
+    thousands one-by-one (each fetch is a round-trip). Narrow the universe with
+    ``AD_REP_SCAN_QUERY`` for completeness. Only the ``From`` header is
+    requested (``format=metadata``) to keep each fetch cheap.
     """
     from ..gmail import client as gmail_client
 
+    if max_messages is None:
+        max_messages = settings.AD_REP_SCAN_MAX_MESSAGES
+    max_messages = max(1, int(max_messages))
+
     q = build_query(lookback_days, query, today)
-    log.info("rep-scan query: %s", q)
+    log.info("rep-scan query: %s (max_messages=%s)", q, max_messages)
     skip = skip_domains()
 
     seen: set[str] = set()
     reps: list[ParsedRep] = []
-    for stub in gmail_client.search_messages(service, q):
+    fetched = 0
+    for stub in gmail_client.search_messages(service, q, max_results=max_messages):
+        if fetched >= max_messages:
+            break
+        fetched += 1
         msg_id = stub["id"]
-        # metadata format is enough — we only need the From header.
-        message = gmail_client.get_message(service, msg_id, fmt="metadata")
+        # metadata + From-only headers is the cheapest fetch that yields sender.
+        message = gmail_client.get_message(
+            service, msg_id, fmt="metadata", metadata_headers=["From"]
+        )
         headers = gmail_client.get_headers(message)
         from_raw = headers.get("from", "")
         display, email, domain = parse_email_header(from_raw)
@@ -138,6 +156,7 @@ def scan_rep_messages(
             continue
         seen.add(email)
         reps.append(ParsedRep(email=email, display_name=display, domain=domain))
+    log.info("rep-scan harvested %s distinct reps from %s messages", len(reps), fetched)
     return reps
 
 
@@ -146,6 +165,7 @@ def run_rep_scan(
     lookback_days: int | None = None,
     service=None,
     query: str | None = None,
+    max_messages: int | None = None,
 ) -> dict:
     """Run a full ad-rep Gmail scan and upsert ``ad_reps``. Returns a counts dict.
 
@@ -178,7 +198,9 @@ def run_rep_scan(
             from ..gmail.client import get_gmail_service
 
             service = get_gmail_service()
-        reps = scan_rep_messages(service, lookback_days, query=query)
+        reps = scan_rep_messages(
+            service, lookback_days, query=query, max_messages=max_messages
+        )
         found = len(reps)
         for rep in reps:
             _, was_created = upsert_ad_rep(
@@ -214,6 +236,9 @@ def run_rep_scan(
     return {
         "source": "rep-scan",
         "lookback_days": lookback_days,
+        "max_messages": (
+            settings.AD_REP_SCAN_MAX_MESSAGES if max_messages is None else max_messages
+        ),
         "found": found,
         "upserted": created + existing,
         "created": created,

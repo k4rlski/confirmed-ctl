@@ -273,7 +273,13 @@ def vendors_scan(lookback_days):
     default=None,
     help="Override the Gmail query (default: exclude the BofA alert sender).",
 )
-def vendors_scan_reps(lookback_days, query):
+@click.option(
+    "--max-messages",
+    default=None,
+    type=int,
+    help="Cap messages fetched (default: AD_REP_SCAN_MAX_MESSAGES=300, newest-first).",
+)
+def vendors_scan_reps(lookback_days, query, max_messages):
     """Seed ad_reps from ad-confirmation Gmail From headers (read-only, non-destructive).
 
     Harvests EXTERNAL sender addresses from the impersonated mailbox in the
@@ -284,7 +290,12 @@ def vendors_scan_reps(lookback_days, query):
 
     try:
         with get_db() as db:
-            result = run_rep_scan(db, lookback_days=lookback_days, query=query)
+            result = run_rep_scan(
+                db,
+                lookback_days=lookback_days,
+                query=query,
+                max_messages=max_messages,
+            )
     except Exception as exc:
         click.echo(f"ERROR: rep-scan failed: {exc}", err=True)
         sys.exit(1)
