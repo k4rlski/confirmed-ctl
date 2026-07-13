@@ -18,6 +18,22 @@ WEIGHT_AMOUNT = 0.50   # Exact or near-exact amount is strongest signal
 WEIGHT_VENDOR = 0.30   # Vendor name substring match
 WEIGHT_DATE = 0.20     # Date proximity
 
+# Vendor-link boosts (ADDITIVE on top of the weighted base score, then clamped
+# to 1.0). These lift transactions whose merchant string is a KNOWN ad vendor —
+# most when it is linked to an ad-rep, and even more when that rep is the sender
+# of the ad's own confirmation email (the rep-email path). They are deliberately
+# small and additive so an unlinked-but-otherwise-perfect match is NEVER
+# penalized (its base score stands); linked/known candidates only rise.
+#
+# Rationale for the magnitudes: a vendor_link tie-break should reorder two
+# candidates with similar amount+date signals (a 0.15 nudge ~ one date-proximity
+# bucket) without letting the link alone manufacture a high-confidence match
+# from thin amount/date evidence. rep_email is the ad-specific confirmation and
+# adds a further nudge; vendor_string (catalogued but unlinked) is the weakest.
+VENDOR_LINK_BOOST = 0.15
+REP_EMAIL_BOOST = 0.05
+VENDOR_STRING_BOOST = 0.03
+
 # Credit-card service fee: newspapers billed to a card post the invoice amount
 # grossed up by a 3.99% processing fee. A bank txn near expected_amount OR near
 # expected_amount * this multiplier is an equally strong amount match.
@@ -50,6 +66,8 @@ def get_candidate_transactions(
     lookback_days: int | None = None,
     lookahead_days: int | None = None,
     top_n: int = 8,
+    link_index=None,
+    from_emails: set[str] | None = None,
 ) -> list[dict]:
     """
     Return top_n ranked bank transactions as candidates for confirming this ad.
@@ -62,6 +80,15 @@ def get_candidate_transactions(
     The window is ``[charge_date - lookback_days, charge_date + lookahead_days]``.
     Both default to the configurable settings (``CONFIRMED_CTL_MATCH_LOOKBACK_DAYS``
     / ``CONFIRMED_CTL_MATCH_LOOKAHEAD_DAYS``, wider 10/10 defaults) when not passed.
+
+    ``link_index`` (a :class:`confirmed_ctl.vendors.VendorLinkIndex`, optional) and
+    ``from_emails`` (the ad's confirmation-email From addresses, optional) enable
+    the vendor-link boost: when a candidate's merchant string is catalogued /
+    linked to an ad-rep, its score is nudged up (see the ``VENDOR_*`` boosts) and
+    the reasons are recorded on the returned dict as ``match_reasons``. When
+    ``link_index`` is ``None`` the boost is skipped and scoring is unchanged
+    (backward compatible). Each returned dict carries ``score`` (final, clamped),
+    ``base_score`` (pre-boost), ``boost_delta`` and ``match_reasons``.
     """
     lookback_days = (
         settings.MATCH_LOOKBACK_DAYS if lookback_days is None else lookback_days
@@ -93,9 +120,22 @@ def get_candidate_transactions(
 
     scored = []
     for txn in candidates:
-        score = _score_candidate(txn, ad)
+        base = _score_candidate(txn, ad)
+        reasons: list[str] = []
+        boost = 0.0
+        if link_index is not None:
+            reasons, boost = link_index.match(txn.vendor_name, from_emails)
+        score = min(1.0, base + boost)
         if score > 0.10:  # minimum threshold — filters obviously irrelevant txns
-            scored.append({"transaction": txn, "score": score})
+            scored.append(
+                {
+                    "transaction": txn,
+                    "score": score,
+                    "base_score": round(base, 3),
+                    "boost_delta": round(boost, 3),
+                    "match_reasons": reasons,
+                }
+            )
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_n]

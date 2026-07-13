@@ -99,7 +99,9 @@ def test_candidates_returns_ranked_txns(client, monkeypatch):
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
     monkeypatch.setattr(
         routes, "get_candidate_transactions",
-        lambda db, ad: [{"transaction": _fake_txn(), "score": 0.91}],
+        lambda db, ad, link_index=None, from_emails=None: [
+            {"transaction": _fake_txn(), "score": 0.91}
+        ],
     )
     thread = {
         "thread_id": "t1",
@@ -198,7 +200,10 @@ def test_candidates_serialization_none_and_zero_safe(client, monkeypatch):
         expected_amount=0.0,
     )
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
-    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(
+        routes, "get_candidate_transactions",
+        lambda db, ad, link_index=None, from_emails=None: [],
+    )
     monkeypatch.setattr(
         routes, "search_threads_by_ad_number", lambda *a, **k: []
     )
@@ -235,7 +240,10 @@ def test_candidates_surfaces_gmail_error_on_failure(client, monkeypatch):
                run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
                expected_amount=100.0)
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
-    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(
+        routes, "get_candidate_transactions",
+        lambda db, ad, link_index=None, from_emails=None: [],
+    )
 
     def _boom(*a, **k):
         raise RuntimeError("gmail down")
@@ -261,7 +269,10 @@ def test_candidates_blank_ad_number_sets_note_without_search(client, monkeypatch
                run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
                expected_amount=100.0)
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
-    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(
+        routes, "get_candidate_transactions",
+        lambda db, ad, link_index=None, from_emails=None: [],
+    )
 
     def _must_not_search(*a, **k):  # pragma: no cover
         raise AssertionError("search must not run for a blank ad number")
@@ -389,7 +400,10 @@ def test_candidates_excluded_array_surfaced(client, monkeypatch):
                run_date=date(2026, 6, 15), expected_charge_date=date(2026, 6, 17),
                expected_amount=2000.0)
     monkeypatch.setattr(routes.crm_client, "get_ad", lambda _id: ad)
-    monkeypatch.setattr(routes, "get_candidate_transactions", lambda db, ad: [])
+    monkeypatch.setattr(
+        routes, "get_candidate_transactions",
+        lambda db, ad, link_index=None, from_emails=None: [],
+    )
     monkeypatch.setattr(routes, "search_threads_by_ad_number", lambda *a, **k: [])
     excluded = [
         {"txn_id": 9, "source": "email-scan", "source_txn_id": "x9",
@@ -596,7 +610,7 @@ def test_suggested_ranks_filters_and_excludes_confirmed(client, monkeypatch):
     # "C" is already confirmed -> must be excluded before scoring.
     _patch_db(monkeypatch, _FakeSession(confirmed_ids=["C"]))
 
-    def _fake_scorer(db, ad, top_n=8):
+    def _fake_scorer(db, ad, top_n=8, link_index=None, from_emails=None):
         if ad.crm_id == "A":
             # Two qualifying candidates -> alt_count 1, best is the 0.95.
             return [
@@ -641,7 +655,9 @@ def test_suggested_respects_min_score_param(client, monkeypatch):
     _patch_db(monkeypatch, _FakeSession(confirmed_ids=[]))
     monkeypatch.setattr(
         routes, "get_candidate_transactions",
-        lambda db, ad, top_n=8: [{"transaction": _fake_txn(), "score": 0.65}],
+        lambda db, ad, top_n=8, link_index=None, from_emails=None: [
+            {"transaction": _fake_txn(), "score": 0.65}
+        ],
     )
     # 0.65 clears default 0.6 but not an explicit 0.90 bar.
     assert client.get("/confirmed-ctl/suggested").get_json()["count"] == 1

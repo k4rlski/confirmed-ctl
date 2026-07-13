@@ -88,6 +88,18 @@ GMAIL_IMPERSONATE = _get("GMAIL_IMPERSONATE", "karl@perm-ads.com")
 # Default lookback window (days) for the BofA transaction-alert email scan.
 EMAIL_SCAN_LOOKBACK_DAYS = int(_get("EMAIL_SCAN_LOOKBACK_DAYS", "2"))
 
+# Ad-rep Gmail scan (seeds ``ad_reps`` from ad-confirmation From headers — see
+# confirmed_ctl/ingest/rep_scan.py). Read-only, same SA/mailbox as the BofA scan.
+#   AD_REP_SCAN_LOOKBACK_DAYS — default window (days) for `vendors scan-reps`.
+#   AD_REP_SCAN_QUERY — Gmail query defining the ad-confirmation universe. Blank
+#     => the built-in default (exclude the BofA alert sender); narrow it (e.g. a
+#     label: or a set of from: clauses) once the real rep sender set is known.
+#   AD_REP_SKIP_DOMAINS — extra comma-separated internal domains to drop from the
+#     From harvest (the perm-ads.com family + the bank are always skipped).
+AD_REP_SCAN_LOOKBACK_DAYS = _get_int("AD_REP_SCAN_LOOKBACK_DAYS", 30)
+AD_REP_SCAN_QUERY = _get("AD_REP_SCAN_QUERY", "")
+AD_REP_SKIP_DOMAINS = _get("AD_REP_SKIP_DOMAINS", "")
+
 # Candidate-matching window (days) for the scorer (matching/scorer.py). Bank
 # charges can post before OR after the CRM buy/charge date, so the window spans
 # ``[charge_date - LOOKBACK, charge_date + LOOKAHEAD]``. Defaults are wider (10/10)

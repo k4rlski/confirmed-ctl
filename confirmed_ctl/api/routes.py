@@ -274,35 +274,12 @@ def get_candidates(ad_crm_id: str):
         }), 404
 
     with get_db() as db:
-        # Bank transaction candidates (ranked).
-        #
-        # CONSUMED-EXCLUSION INVARIANT: get_candidate_transactions() only returns
-        # UNCONSUMED, non-ignored rows — its query filters
-        # ``confirmed_ad_crm_id IS NULL`` AND ``ignored IS FALSE`` (see
-        # confirmed_ctl/matching/scorer.py, the two .filter() lines
-        # ``BankTransaction.confirmed_ad_crm_id.is_(None)`` and
-        # ``BankTransaction.ignored.is_(False)``). So once a bank txn is mapped to
-        # an ad (confirmed_ad_crm_id set at /confirm) or flagged as SAAS/vendor
-        # noise, it can NEVER reappear as a candidate for another ad's
-        # reconciliation. Do not relax this filter.
-        candidates = get_candidate_transactions(db, ad)
-
-        # Near-miss bank txns EXCLUDED from the candidate set (bounded <=10):
-        # plausible by amount but out-of-window or already matched. Surfaced so
-        # operators can spot e.g. a second identical charge just outside the
-        # window. Best-effort — never blocks the popup.
-        try:
-            excluded = get_excluded_transactions(db, ad)
-        except Exception:
-            logger.exception(
-                "excluded-txn lookup failed for ad_crm_id=%s", ad_crm_id
-            )
-            excluded = []
-
-        # Gmail threads. Blank ad number => a distinguishable "note" (we did NOT
-        # search); a real search failure => a surfaced "gmail_error" (we do NOT
-        # silently pretend there were no results). Otherwise the ranked thread
-        # summaries (each with gmail_url + matched_by).
+        # Gmail threads FIRST — so the ad-confirmation From addresses are known
+        # before scoring (they drive the rep-email vendor-link path). Blank ad
+        # number => a distinguishable "note" (we did NOT search); a real search
+        # failure => a surfaced "gmail_error" (we do NOT silently pretend there
+        # were no results). Otherwise the ranked thread summaries (each with
+        # gmail_url + matched_by).
         gmail_threads: list[dict] = []
         gmail_error: str | None = None
         gmail_note: str | None = None
@@ -328,6 +305,54 @@ def get_candidates(ad_crm_id: str):
                     "Gmail thread search failed for ad_crm_id=%s", ad_crm_id
                 )
                 gmail_error = "Gmail search failed; threads could not be loaded."
+
+        # The set of ad-confirmation From email addresses (rep-email path): parse
+        # each thread's raw From header to a bare address. Used only to LIFT a
+        # linked candidate — never to exclude anything.
+        from_emails: set[str] = set()
+        for th in gmail_threads:
+            _d, em, _dom = vendors.parse_email_header(th.get("from"))
+            if em:
+                from_emails.add(em)
+
+        # Read-once vendor-link index (rep<->merchant-string registry). Passed to
+        # the scorer so a candidate whose merchant string is a known/linked ad
+        # vendor is nudged up (with match_reasons recorded). Best-effort — a
+        # registry read failure must never sink the popup.
+        try:
+            link_index = vendors.build_vendor_link_index(db)
+        except Exception:
+            logger.exception(
+                "vendor-link index build failed for ad_crm_id=%s", ad_crm_id
+            )
+            link_index = None
+
+        # Bank transaction candidates (ranked).
+        #
+        # CONSUMED-EXCLUSION INVARIANT: get_candidate_transactions() only returns
+        # UNCONSUMED, non-ignored rows — its query filters
+        # ``confirmed_ad_crm_id IS NULL`` AND ``ignored IS FALSE`` (see
+        # confirmed_ctl/matching/scorer.py, the two .filter() lines
+        # ``BankTransaction.confirmed_ad_crm_id.is_(None)`` and
+        # ``BankTransaction.ignored.is_(False)``). So once a bank txn is mapped to
+        # an ad (confirmed_ad_crm_id set at /confirm) or flagged as SAAS/vendor
+        # noise, it can NEVER reappear as a candidate for another ad's
+        # reconciliation. Do not relax this filter.
+        candidates = get_candidate_transactions(
+            db, ad, link_index=link_index, from_emails=from_emails
+        )
+
+        # Near-miss bank txns EXCLUDED from the candidate set (bounded <=10):
+        # plausible by amount but out-of-window or already matched. Surfaced so
+        # operators can spot e.g. a second identical charge just outside the
+        # window. Best-effort — never blocks the popup.
+        try:
+            excluded = get_excluded_transactions(db, ad)
+        except Exception:
+            logger.exception(
+                "excluded-txn lookup failed for ad_crm_id=%s", ad_crm_id
+            )
+            excluded = []
 
         return jsonify({
             "ad": {
@@ -379,6 +404,11 @@ def get_candidates(ad_crm_id: str):
                     "memo": c["transaction"].private_note,
                     "score": round(c["score"], 3),
                     "score_pct": int(c["score"] * 100),
+                    # Vendor-link transparency: why (if at all) this candidate was
+                    # boosted, and by how much (0.0 when no link matched).
+                    "match_reasons": c.get("match_reasons", []),
+                    "boost_delta": c.get("boost_delta", 0.0),
+                    "base_score_pct": int(c.get("base_score", c["score"]) * 100),
                 }
                 for c in candidates
             ],
@@ -833,12 +863,23 @@ def list_suggested():
         }
         unconfirmed = [ad for ad in clearances if ad.crm_id not in confirmed_ids]
 
+        # Read-once vendor-link index shared across every ad's scoring. No Gmail
+        # per-ad here (that is the /candidates path), so there are no From
+        # addresses — the boost uses the bank-string link path only.
+        try:
+            link_index = vendors.build_vendor_link_index(db)
+        except Exception:
+            logger.exception("vendor-link index build failed (suggested)")
+            link_index = None
+
         for ad in unconfirmed:
             # Reuse the SAME scorer + consumed/ignored-exclusion invariant as the
             # per-ad popup. top_n is small; we only need the best + a count of
             # other qualifying candidates for the ambiguity hint.
             try:
-                scored = get_candidate_transactions(db, ad, top_n=8)
+                scored = get_candidate_transactions(
+                    db, ad, top_n=8, link_index=link_index
+                )
             except Exception:
                 logger.exception(
                     "suggested scoring failed for ad_crm_id=%s", ad.crm_id
@@ -865,6 +906,11 @@ def list_suggested():
             }
             item["score"] = round(best["score"], 3)
             item["score_pct"] = int(best["score"] * 100)
+            # Vendor-link transparency for the best pair (empty / 0.0 when the
+            # merchant string is not catalogued or linked).
+            item["match_reasons"] = best.get("match_reasons", [])
+            item["boost_delta"] = best.get("boost_delta", 0.0)
+            item["base_score_pct"] = int(best.get("base_score", best["score"]) * 100)
             # Other bank txns that also cleared min_score for this ad (ambiguity).
             item["alt_count"] = len(qualifying) - 1
             suggestions.append(item)
@@ -1319,4 +1365,40 @@ def vendor_map_scan():
     with get_db() as db:
         result = vendors.scan_seed_merchant_strings(db, lookback_days=lookback)
         db.commit()
+        return jsonify({"status": "ok", **result})
+
+
+@confirmed_ctl_bp.route("/vendor-map/scan-reps", methods=["POST"])
+def vendor_map_scan_reps():
+    """Seed ``ad_reps`` from ad-confirmation Gmail From headers (non-destructive).
+
+    Runs the read-only ad-rep Gmail scan (``confirmed_ctl.ingest.rep_scan``):
+    harvests EXTERNAL sender addresses from the impersonated mailbox in the
+    lookback window and upserts them into ``ad_reps`` (email unique). It NEVER
+    creates rep<->string links (``linked_proposed`` is always 0 — links are made
+    by a human in the UI) and NEVER touches the CRM.
+
+    Body (all optional): ``lookback_days`` (int, default
+    ``AD_REP_SCAN_LOOKBACK_DAYS``) and ``query`` (Gmail query override). A Gmail
+    failure surfaces as a controlled 502 rather than an unhandled 500.
+    """
+    from ..ingest.rep_scan import run_rep_scan
+
+    body = _vendor_body()
+    lookback = body.get("lookback_days")
+    try:
+        lookback = int(lookback) if lookback is not None else None
+    except (TypeError, ValueError):
+        lookback = None
+    query = body.get("query") or None
+    with get_db() as db:
+        try:
+            result = run_rep_scan(db, lookback_days=lookback, query=query)
+        except Exception:
+            logger.exception("vendor-map scan-reps failed")
+            return jsonify({
+                "status": "rep_scan_failed",
+                "detail": "ad-rep Gmail scan failed; the mailbox is unreachable "
+                          "or misconfigured.",
+            }), 502
         return jsonify({"status": "ok", **result})
