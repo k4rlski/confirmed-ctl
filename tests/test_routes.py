@@ -555,6 +555,102 @@ def test_reconciled_none_safe_when_no_bank_txn(client, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# /suggested — bulk high-confidence, not-yet-confirmed ad<->txn suggestions
+# --------------------------------------------------------------------------- #
+def test_suggested_503_when_crm_unconfigured(client, monkeypatch):
+    _configure_crm(monkeypatch, configured=False)
+    resp = client.get("/confirmed-ctl/suggested")
+    assert resp.status_code == 503
+    assert resp.get_json()["status"] == "crm_not_configured"
+
+
+def test_suggested_502_when_crm_errors(client, monkeypatch):
+    _configure_crm(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("pymysql: (1045) Access denied for user")
+
+    monkeypatch.setattr(routes.crm_client, "list_clearances", _boom)
+    resp = client.get("/confirmed-ctl/suggested")
+    assert resp.status_code == 502
+    body = resp.get_json()
+    assert body["status"] == "crm_unavailable"
+    assert "pymysql" not in body["detail"]
+    assert "1045" not in body["detail"]
+
+
+def test_suggested_ranks_filters_and_excludes_confirmed(client, monkeypatch):
+    _configure_crm(monkeypatch)
+    clearances = [
+        CrmAd(crm_id="A", ad_number="AD-A", newspaper_name="Miami Herald",
+              run_date=date(2026, 6, 1), expected_charge_date=date(2026, 6, 2),
+              expected_amount=100.0),
+        CrmAd(crm_id="B", ad_number="AD-B", newspaper_name="Sun Sentinel",
+              run_date=date(2026, 6, 3), expected_charge_date=date(2026, 6, 4),
+              expected_amount=200.0),
+        CrmAd(crm_id="C", ad_number="AD-C", newspaper_name="LA Times",
+              run_date=date(2026, 6, 5), expected_charge_date=date(2026, 6, 6),
+              expected_amount=300.0),
+    ]
+    monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
+    # "C" is already confirmed -> must be excluded before scoring.
+    _patch_db(monkeypatch, _FakeSession(confirmed_ids=["C"]))
+
+    def _fake_scorer(db, ad, top_n=8):
+        if ad.crm_id == "A":
+            # Two qualifying candidates -> alt_count 1, best is the 0.95.
+            return [
+                {"transaction": _fake_txn(), "score": 0.95},
+                {"transaction": BankTransaction(
+                    id=2, source="email-scan", source_txn_id="def",
+                    txn_date=date(2026, 6, 2), total_amount=101.0,
+                    vendor_name="MIAMI HERALD"), "score": 0.72},
+            ]
+        if ad.crm_id == "B":
+            # Below the default 0.6 threshold -> excluded.
+            return [{"transaction": _fake_txn(), "score": 0.40}]
+        raise AssertionError("confirmed ad C must not be scored")
+
+    monkeypatch.setattr(routes, "get_candidate_transactions", _fake_scorer)
+
+    resp = client.get("/confirmed-ctl/suggested")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["min_score"] == 0.6
+    # Only A clears the threshold (B too low, C already confirmed).
+    assert data["count"] == 1
+    sug = data["suggestions"][0]
+    assert sug["crm_id"] == "A"
+    assert sug["ad_number"] == "AD-A"
+    assert sug["score"] == 0.95
+    assert sug["score_pct"] == 95
+    assert sug["alt_count"] == 1
+    # Suggested txn identity is surfaced.
+    assert sug["suggested_txn"]["txn_id"] == 1
+    assert sug["suggested_txn"]["amount"] == 1368.0
+    assert sug["suggested_txn"]["vendor_name"] == "MIAMI HERALD ACH"
+
+
+def test_suggested_respects_min_score_param(client, monkeypatch):
+    _configure_crm(monkeypatch)
+    clearances = [
+        CrmAd(crm_id="A", ad_number="AD-A", newspaper_name="Miami Herald",
+              expected_charge_date=date(2026, 6, 2), expected_amount=100.0),
+    ]
+    monkeypatch.setattr(routes.crm_client, "list_clearances", lambda: clearances)
+    _patch_db(monkeypatch, _FakeSession(confirmed_ids=[]))
+    monkeypatch.setattr(
+        routes, "get_candidate_transactions",
+        lambda db, ad, top_n=8: [{"transaction": _fake_txn(), "score": 0.65}],
+    )
+    # 0.65 clears default 0.6 but not an explicit 0.90 bar.
+    assert client.get("/confirmed-ctl/suggested").get_json()["count"] == 1
+    high = client.get("/confirmed-ctl/suggested?min_score=0.90").get_json()
+    assert high["min_score"] == 0.90
+    assert high["count"] == 0
+
+
+# --------------------------------------------------------------------------- #
 # /bank-transaction/<txn_id> — read-only Bank-Trx modal detail
 # --------------------------------------------------------------------------- #
 class _GetConfQuery:
