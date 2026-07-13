@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -285,4 +286,148 @@ class IgnoreMemoPattern(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# Allowed provenance values for a ``bank_merchant_strings`` row — how the string
+# entered the catalog. ``manual`` = an operator typed it; ``scan`` = seeded from
+# the local ``bank_transactions`` catalog; ``bofa_alert`` = captured directly at
+# BofA-alert ingest (future). Enforced by a DB CHECK constraint.
+BANK_MERCHANT_STRING_SOURCES = ("manual", "scan", "bofa_alert")
+
+
+class AdRep(Base):
+    """A known ad-rep / ad-confirmation *sender* identity.
+
+    These are the people/vendors who send the ad-confirmation emails this suite
+    reconciles against (e.g. ``Buchanan, Roshanda
+    <roshanda.buchanan@mediumgiant.co>``). ``email`` is the stable natural key
+    and is stored LOWER-CASED (the app normalizes on the way in) with a UNIQUE
+    constraint so a rep is registered once. ``display_name``/``org``/``domain``
+    are human-facing metadata (``domain`` is the part after ``@``, kept for
+    grouping/scan). This table lives ONLY in the standalone ``confirmed_ctl``
+    Postgres — it is NEVER a CRM field (no permtrak.com write).
+    """
+
+    __tablename__ = "ad_reps"
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_ad_reps_email"),
+        Index("ix_ad_reps_domain", "domain"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    org: Mapped[str | None] = mapped_column(String(255))
+    domain: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    links: Mapped[list["AdRepMerchantLink"]] = relationship(
+        "AdRepMerchantLink",
+        back_populates="ad_rep",
+        cascade="all, delete-orphan",
+    )
+
+
+class BankMerchantString(Base):
+    """A catalogued bank merchant / trx string from BofA alerts.
+
+    The canonical key is ``normalized_string`` (uppercased, whitespace-collapsed
+    form of the raw bank memo, e.g. ``DALLAS MORNING NEWS-AD-DALLAS ,TX`` ->
+    ``DALLAS MORNING NEWS-AD-DALLAS ,TX``) so shorter/variant raw spellings map
+    to one row. ``raw_examples`` accumulates the distinct raw spellings seen.
+    ``source`` records how it entered the catalog (see
+    ``BANK_MERCHANT_STRING_SOURCES``). Standalone ``confirmed_ctl`` Postgres only.
+    """
+
+    __tablename__ = "bank_merchant_strings"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalized_string", name="uq_bank_merchant_strings_normalized"
+        ),
+        CheckConstraint(
+            "source IN ('manual', 'scan', 'bofa_alert')",
+            name="ck_bank_merchant_strings_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    normalized_string: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Distinct raw spellings observed for this normalized string. Portable JSON
+    # (JSON on Postgres, TEXT-backed JSON on SQLite for tests) — a list of str.
+    raw_examples: Mapped[list | None] = mapped_column(JSON)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'manual'")
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    first_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    links: Mapped[list["AdRepMerchantLink"]] = relationship(
+        "AdRepMerchantLink",
+        back_populates="merchant_string",
+        cascade="all, delete-orphan",
+    )
+
+
+class AdRepMerchantLink(Base):
+    """The pairing of an ad-rep to a bank merchant string.
+
+    A rep may link to many strings and a string to many reps (many-to-many),
+    with the pair unique so the same link is never duplicated. Both FKs are
+    genuine same-database references (ON DELETE CASCADE) — deleting a rep or a
+    string removes its links. ``confidence`` is ``'manual'`` (1.0) for a
+    human-made link; a scanned/proposed link carries a numeric-ish string. This
+    is the primary link Map Trx / future auto-match reads: rep email path first,
+    bank merchant string later.
+    """
+
+    __tablename__ = "ad_rep_merchant_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "ad_rep_id",
+            "bank_merchant_string_id",
+            name="uq_ad_rep_merchant_link",
+        ),
+        Index("ix_ad_rep_merchant_links_rep", "ad_rep_id"),
+        Index("ix_ad_rep_merchant_links_string", "bank_merchant_string_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ad_rep_id: Mapped[int] = mapped_column(
+        ForeignKey("ad_reps.id", ondelete="CASCADE"), nullable=False
+    )
+    bank_merchant_string_id: Mapped[int] = mapped_column(
+        ForeignKey("bank_merchant_strings.id", ondelete="CASCADE"), nullable=False
+    )
+    confidence: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default=text("'manual'")
+    )
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    ad_rep: Mapped[AdRep] = relationship("AdRep", back_populates="links")
+    merchant_string: Mapped[BankMerchantString] = relationship(
+        "BankMerchantString", back_populates="links"
     )

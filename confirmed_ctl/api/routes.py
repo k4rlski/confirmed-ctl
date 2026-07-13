@@ -19,9 +19,17 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, jsonify, request
 
-from .. import settings
+from .. import settings, vendors
 from ..crm import client as crm_client
-from ..db.models import AdConfirmation, BankTransaction, CrmAd, SyncLog
+from ..db.models import (
+    AdConfirmation,
+    AdRep,
+    AdRepMerchantLink,
+    BankMerchantString,
+    BankTransaction,
+    CrmAd,
+    SyncLog,
+)
 from ..db.session import get_db
 from ..gmail.client import search_threads_by_ad_number
 from ..matching.rag import store_confirmed_match
@@ -1011,3 +1019,304 @@ def get_bank_transaction(txn_id: str):
                     }
 
         return jsonify(payload)
+
+
+# =========================================================================== #
+# Ad-rep <-> bank merchant-string registry (vendor-map)
+#
+# CRUD over three standalone-Postgres tables (ad_reps / bank_merchant_strings /
+# ad_rep_merchant_links). NEVER touches the CRM. Delete policy: HARD delete for
+# all three (a rep/string delete cascades to its links via the FK). The UI
+# confirms every delete. See confirmed_ctl.vendors for normalization/upsert.
+# =========================================================================== #
+def _vendor_body() -> dict:
+    return request.get_json(silent=True) or {}
+
+
+@confirmed_ctl_bp.route("/vendor-map", methods=["GET"])
+def vendor_map_overview():
+    """Combined registry view for the MARS page.
+
+    Returns every rep (each with its linked merchant strings), every catalogued
+    string, the flat link list, and the set of strings NOT yet linked to any rep
+    (so the operator can spot pairing gaps). READ-ONLY.
+    """
+    with get_db() as db:
+        reps = db.query(AdRep).order_by(AdRep.display_name, AdRep.email).all()
+        strings = (
+            db.query(BankMerchantString)
+            .order_by(BankMerchantString.normalized_string)
+            .all()
+        )
+        links = (
+            db.query(AdRepMerchantLink)
+            .order_by(AdRepMerchantLink.id)
+            .all()
+        )
+
+        # rep_id -> [linked string dicts]
+        strings_by_rep: dict[int, list[dict]] = {}
+        linked_string_ids: set[int] = set()
+        for link in links:
+            linked_string_ids.add(link.bank_merchant_string_id)
+            s = link.merchant_string
+            strings_by_rep.setdefault(link.ad_rep_id, []).append(
+                {
+                    "link_id": link.id,
+                    "bank_merchant_string_id": link.bank_merchant_string_id,
+                    "normalized_string": s.normalized_string if s else None,
+                    "raw_examples": list(s.raw_examples or []) if s else [],
+                    "source": s.source if s else None,
+                    "confidence": link.confidence,
+                }
+            )
+
+        reps_out = []
+        for rep in reps:
+            item = vendors.rep_to_dict(rep)
+            item["strings"] = strings_by_rep.get(rep.id, [])
+            reps_out.append(item)
+
+        unlinked = [
+            vendors.string_to_dict(s)
+            for s in strings
+            if s.id not in linked_string_ids
+        ]
+
+        return jsonify({
+            "reps": reps_out,
+            "strings": [vendors.string_to_dict(s) for s in strings],
+            "links": [vendors.link_to_dict(link) for link in links],
+            "unlinked_strings": unlinked,
+            "counts": {
+                "reps": len(reps),
+                "strings": len(strings),
+                "links": len(links),
+                "unlinked_strings": len(unlinked),
+            },
+        })
+
+
+# --- Reps ------------------------------------------------------------------ #
+@confirmed_ctl_bp.route("/vendor-map/reps", methods=["GET"])
+def vendor_map_reps_list():
+    with get_db() as db:
+        reps = db.query(AdRep).order_by(AdRep.display_name, AdRep.email).all()
+        return jsonify({"count": len(reps), "reps": [vendors.rep_to_dict(r) for r in reps]})
+
+
+@confirmed_ctl_bp.route("/vendor-map/reps", methods=["POST"])
+def vendor_map_reps_create():
+    body = _vendor_body()
+    # Accept either a bare email or a full "Name <email>" header (parse both).
+    header = (body.get("email") or "").strip()
+    display, email, _domain = vendors.parse_email_header(header)
+    if not email:
+        return jsonify({"error": "email is required"}), 400
+    display_name = (body.get("display_name") or display or None)
+    with get_db() as db:
+        try:
+            rep, created = vendors.upsert_ad_rep(
+                db,
+                email=email,
+                display_name=display_name,
+                org=(body.get("org") or None),
+                notes=(body.get("notes") or None),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        db.commit()
+        return jsonify({"created": created, "rep": vendors.rep_to_dict(rep)}), (
+            201 if created else 200
+        )
+
+
+@confirmed_ctl_bp.route("/vendor-map/reps/<int:rep_id>", methods=["PATCH", "PUT"])
+def vendor_map_reps_update(rep_id: int):
+    body = _vendor_body()
+    with get_db() as db:
+        rep = db.get(AdRep, rep_id)
+        if rep is None:
+            return jsonify({"error": "not_found"}), 404
+        if "display_name" in body:
+            rep.display_name = (body.get("display_name") or None)
+        if "org" in body:
+            rep.org = (body.get("org") or None)
+        if "notes" in body:
+            rep.notes = (body.get("notes") or None)
+        if "active" in body:
+            rep.active = bool(body.get("active"))
+        if body.get("email"):
+            _d, email, domain = vendors.parse_email_header(body["email"])
+            if email:
+                rep.email = email
+                rep.domain = domain or rep.domain
+        db.commit()
+        return jsonify({"rep": vendors.rep_to_dict(rep)})
+
+
+@confirmed_ctl_bp.route("/vendor-map/reps/<int:rep_id>", methods=["DELETE"])
+def vendor_map_reps_delete(rep_id: int):
+    with get_db() as db:
+        rep = db.get(AdRep, rep_id)
+        if rep is None:
+            return jsonify({"error": "not_found"}), 404
+        db.delete(rep)  # cascades to its links
+        db.commit()
+        return jsonify({"deleted": rep_id})
+
+
+# --- Merchant strings ------------------------------------------------------ #
+@confirmed_ctl_bp.route("/vendor-map/strings", methods=["GET"])
+def vendor_map_strings_list():
+    with get_db() as db:
+        rows = (
+            db.query(BankMerchantString)
+            .order_by(BankMerchantString.normalized_string)
+            .all()
+        )
+        return jsonify({
+            "count": len(rows),
+            "strings": [vendors.string_to_dict(s) for s in rows],
+        })
+
+
+@confirmed_ctl_bp.route("/vendor-map/strings", methods=["POST"])
+def vendor_map_strings_create():
+    body = _vendor_body()
+    raw = (body.get("raw_string") or body.get("normalized_string") or "").strip()
+    if not raw:
+        return jsonify({"error": "raw_string is required"}), 400
+    with get_db() as db:
+        try:
+            row, created = vendors.upsert_merchant_string(
+                db, raw_string=raw, source=(body.get("source") or "manual"),
+                notes=(body.get("notes") or None),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        db.commit()
+        return jsonify({"created": created, "string": vendors.string_to_dict(row)}), (
+            201 if created else 200
+        )
+
+
+@confirmed_ctl_bp.route("/vendor-map/strings/<int:string_id>", methods=["PATCH", "PUT"])
+def vendor_map_strings_update(string_id: int):
+    body = _vendor_body()
+    with get_db() as db:
+        row = db.get(BankMerchantString, string_id)
+        if row is None:
+            return jsonify({"error": "not_found"}), 404
+        if "notes" in body:
+            row.notes = (body.get("notes") or None)
+        if "active" in body:
+            row.active = bool(body.get("active"))
+        db.commit()
+        return jsonify({"string": vendors.string_to_dict(row)})
+
+
+@confirmed_ctl_bp.route("/vendor-map/strings/<int:string_id>", methods=["DELETE"])
+def vendor_map_strings_delete(string_id: int):
+    with get_db() as db:
+        row = db.get(BankMerchantString, string_id)
+        if row is None:
+            return jsonify({"error": "not_found"}), 404
+        db.delete(row)  # cascades to its links
+        db.commit()
+        return jsonify({"deleted": string_id})
+
+
+# --- Links ----------------------------------------------------------------- #
+@confirmed_ctl_bp.route("/vendor-map/links", methods=["GET"])
+def vendor_map_links_list():
+    with get_db() as db:
+        links = db.query(AdRepMerchantLink).order_by(AdRepMerchantLink.id).all()
+        return jsonify({
+            "count": len(links),
+            "links": [vendors.link_to_dict(link) for link in links],
+        })
+
+
+@confirmed_ctl_bp.route("/vendor-map/links", methods=["POST"])
+def vendor_map_links_create():
+    """Create a rep<->string link.
+
+    Accepts existing ids (``ad_rep_id`` / ``bank_merchant_string_id``) and/or
+    inline creation values (``email`` and/or ``raw_string``) so the UI can link
+    in one call even when a side does not exist yet.
+    """
+    body = _vendor_body()
+    with get_db() as db:
+        rep_id = body.get("ad_rep_id")
+        string_id = body.get("bank_merchant_string_id")
+
+        if not rep_id and body.get("email"):
+            _d, email, _dom = vendors.parse_email_header(body["email"])
+            display = (body.get("display_name") or _d or None)
+            if email:
+                rep, _ = vendors.upsert_ad_rep(
+                    db, email=email, display_name=display, org=(body.get("org") or None)
+                )
+                rep_id = rep.id
+        if not string_id and body.get("raw_string"):
+            row, _ = vendors.upsert_merchant_string(
+                db, raw_string=body["raw_string"], source=(body.get("source") or "manual")
+            )
+            string_id = row.id
+
+        if not rep_id or not string_id:
+            return jsonify({
+                "error": "ad_rep_id (or email) and bank_merchant_string_id "
+                         "(or raw_string) are required"
+            }), 400
+
+        if db.get(AdRep, rep_id) is None:
+            return jsonify({"error": "ad_rep not found"}), 404
+        if db.get(BankMerchantString, string_id) is None:
+            return jsonify({"error": "bank_merchant_string not found"}), 404
+
+        link, created = vendors.link_rep_to_string(
+            db,
+            ad_rep_id=rep_id,
+            bank_merchant_string_id=string_id,
+            confidence=(body.get("confidence") or "manual"),
+            created_by=(body.get("created_by") or "user"),
+            notes=(body.get("notes") or None),
+        )
+        db.commit()
+        return jsonify({"created": created, "link": vendors.link_to_dict(link)}), (
+            201 if created else 200
+        )
+
+
+@confirmed_ctl_bp.route("/vendor-map/links/<int:link_id>", methods=["DELETE"])
+def vendor_map_links_delete(link_id: int):
+    with get_db() as db:
+        link = db.get(AdRepMerchantLink, link_id)
+        if link is None:
+            return jsonify({"error": "not_found"}), 404
+        db.delete(link)
+        db.commit()
+        return jsonify({"deleted": link_id})
+
+
+@confirmed_ctl_bp.route("/vendor-map/scan", methods=["POST"])
+def vendor_map_scan():
+    """Seed the merchant-string catalog from local bank_transactions (non-destructive).
+
+    Upserts distinct non-ignored ``bank_transactions.vendor_name`` values as
+    ``source='scan'`` catalog rows and reports how many are still unlinked. It
+    NEVER auto-creates reps or links (review-first). Optional ``lookback_days``
+    bounds the scan by ``txn_date``.
+    """
+    body = _vendor_body()
+    lookback = body.get("lookback_days")
+    try:
+        lookback = int(lookback) if lookback is not None else None
+    except (TypeError, ValueError):
+        lookback = None
+    with get_db() as db:
+        result = vendors.scan_seed_merchant_strings(db, lookback_days=lookback)
+        db.commit()
+        return jsonify({"status": "ok", **result})

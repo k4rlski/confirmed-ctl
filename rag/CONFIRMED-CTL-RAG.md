@@ -79,8 +79,8 @@ automatic "mark Done" pipeline.
 
 ### 3.1 Postgres (owned by confirmed-ctl, on FANG)
 
-Alembic head: **`0003_ignore_memo_patterns`** (0001_initial → 0002_add_synclog_source
-→ 0003_ignore_memo_patterns).
+Alembic head: **`0005_vendor_rep_registry`** (0001_initial → 0002_add_synclog_source
+→ 0003_ignore_memo_patterns → 0004_bank_txn_bofa_thread → 0005_vendor_rep_registry).
 
 **`bank_transactions`** — one ingested BofA transaction.
 
@@ -132,6 +132,26 @@ Indexes: `idx_bank_txn_date`, `idx_bank_txn_vendor`, `idx_bank_txn_amount`,
 **`confirmed_ctl_sync_log`** — audit row per ingestion run: `source`, `synced_at`,
 `lookback_days`, `txns_fetched`, `txns_new`, `txns_updated`, `auto_matched`, `errors`,
 `duration_ms`.
+
+**Ad-rep ↔ bank merchant-string registry (migration `0005`, all on FANG Postgres — never the CRM):**
+
+- **`ad_reps`** — ad-confirmation sender identities. `email` (varchar(320), `UNIQUE`,
+  stored LOWER-cased), `display_name`, `org`, `domain` (indexed), `notes`, `active`,
+  `created_at`/`updated_at`. The app parses a `Name <addr>` header into display+email.
+- **`bank_merchant_strings`** — catalogued BofA merchant/trx strings. `normalized_string`
+  (varchar(255), `UNIQUE`; uppercase + whitespace-collapsed key), `raw_examples` (JSON list
+  of raw spellings), `source` (CHECK IN `manual`/`scan`/`bofa_alert`), `notes`, `first_seen`/
+  `last_seen`, `active`. Scan seeds these from distinct non-ignored `bank_transactions.vendor_name`.
+- **`ad_rep_merchant_links`** — the many-to-many pairing. `ad_rep_id` / `bank_merchant_string_id`
+  (both FK, `ON DELETE CASCADE`, `UNIQUE(rep,string)`), `confidence` (`manual`=1.0),
+  `created_by`, `notes`, `created_at`. Deleting a rep or string cascades its links.
+
+Purpose: give Map Trx / future auto-match a primary **rep-email → bank-merchant-string**
+link. CRUD via `api/routes.py` `/vendor-map*` endpoints (proxied by MARS
+`/api/confirmed-ctl/vendor-map*`); seed via `POST /vendor-map/scan` or CLI
+`confirmed-ctl vendors scan [--lookback-days N]` (non-destructive upsert; never auto-links).
+Helpers live in `confirmed_ctl/vendors.py`. UI: the "Ad rep ↔ bank strings" section on
+`/adm/confirmed-ctl-adm` (below Suggested Matches). NEVER a CRM/permtrak.com object.
 
 **`ignore_memo_patterns`** — DB-tracked SAAS/vendor ignore-strings: `pattern` (short
 stable substring), `label`, `active`, `created_at`. Case-insensitive functional index
