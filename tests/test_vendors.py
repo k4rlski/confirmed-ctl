@@ -167,3 +167,39 @@ def test_edit_rep_notes(client):
                       json={"notes": "primary Dallas rep"})
     assert up.status_code == 200
     assert up.get_json()["rep"]["notes"] == "primary Dallas rep"
+
+
+# --------------------------------------------------------------------------- #
+# build_vendor_link_index — the read-once view the scorer boost consumes
+# --------------------------------------------------------------------------- #
+def test_build_vendor_link_index(session):
+    rep, _ = vendors.upsert_ad_rep(
+        session, email="roshanda.buchanan@mediumgiant.co", display_name="Roshanda"
+    )
+    linked = vendors.upsert_merchant_string(
+        session, raw_string="DALLAS MORNING NEWS-AD-DALLAS ,TX"
+    )[0]
+    unlinked = vendors.upsert_merchant_string(
+        session, raw_string="SF CHRONICLE ADVTZNG -SAN FRANCISCO,CA"
+    )[0]
+    vendors.link_rep_to_string(
+        session, ad_rep_id=rep.id, bank_merchant_string_id=linked.id
+    )
+    session.commit()
+
+    idx = vendors.build_vendor_link_index(session)
+    # Both strings are catalogued; only the Dallas one is linked to the rep.
+    assert "DALLAS MORNING NEWS-AD-DALLAS ,TX" in idx.catalog
+    assert "SF CHRONICLE ADVTZNG -SAN FRANCISCO,CA" in idx.catalog
+    assert "DALLAS MORNING NEWS-AD-DALLAS ,TX" in idx.linked
+    assert "SF CHRONICLE ADVTZNG -SAN FRANCISCO,CA" not in idx.linked
+    entry = idx.linked["DALLAS MORNING NEWS-AD-DALLAS ,TX"]
+    assert entry["rep_ids"] == [rep.id]
+    assert entry["rep_emails"] == ["roshanda.buchanan@mediumgiant.co"]
+    # And the match() helper resolves the rep-email path from the index.
+    reasons, boost = idx.match(
+        "dallas morning news-ad-dallas ,tx",
+        from_emails={"roshanda.buchanan@mediumgiant.co"},
+    )
+    assert reasons == ["vendor_link", "rep_email"]
+    assert boost > 0

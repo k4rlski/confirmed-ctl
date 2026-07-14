@@ -146,12 +146,35 @@ Indexes: `idx_bank_txn_date`, `idx_bank_txn_vendor`, `idx_bank_txn_amount`,
   (both FK, `ON DELETE CASCADE`, `UNIQUE(rep,string)`), `confidence` (`manual`=1.0),
   `created_by`, `notes`, `created_at`. Deleting a rep or string cascades its links.
 
-Purpose: give Map Trx / future auto-match a primary **rep-email → bank-merchant-string**
-link. CRUD via `api/routes.py` `/vendor-map*` endpoints (proxied by MARS
-`/api/confirmed-ctl/vendor-map*`); seed via `POST /vendor-map/scan` or CLI
-`confirmed-ctl vendors scan [--lookback-days N]` (non-destructive upsert; never auto-links).
-Helpers live in `confirmed_ctl/vendors.py`. UI: the "Ad rep ↔ bank strings" section on
-`/adm/confirmed-ctl-adm` (below Suggested Matches). NEVER a CRM/permtrak.com object.
+Purpose: give Map Trx / Suggested a primary **rep-email → bank-merchant-string**
+link (see the vendor-link boost in §8). CRUD via `api/routes.py` `/vendor-map*` endpoints
+(proxied by MARS `/api/confirmed-ctl/vendor-map*`); helpers in `confirmed_ctl/vendors.py`.
+Seed the two catalogs (non-destructive, review-first — NEVER auto-links, never CRM):
+
+- **bank strings** ← `POST /vendor-map/scan` or CLI `confirmed-ctl vendors scan
+  [--lookback-days N]` (distinct non-ignored `bank_transactions.vendor_name`).
+- **ad_reps** ← `POST /vendor-map/scan-reps` or CLI `confirmed-ctl vendors scan-reps
+  [--lookback-days N] [--query …] [--max-messages N]` (`confirmed_ctl/ingest/rep_scan.py`):
+  a read-only Gmail harvest of ad-confirmation **From** headers on the SAME service account /
+  mailbox (`GMAIL_IMPERSONATE`) as the BofA scan. Universe = mailbox in the lookback window
+  MINUS the BofA alert sender (`AD_REP_SCAN_QUERY` overrides the query); internal/bank domains
+  (`perm-ads.com` family + BofA, plus `AD_REP_SKIP_DOMAINS`) are dropped so only EXTERNAL
+  rep addresses upsert. **BOUNDED:** at most `AD_REP_SCAN_MAX_MESSAGES` (default 300) messages
+  are fetched — Gmail returns newest-first, so a broad default query samples the most recent
+  slice rather than fetching thousands one-by-one (each fetch is a round-trip; only the `From`
+  header is requested via `format=metadata`). Narrow `AD_REP_SCAN_QUERY` (e.g. a
+  `label:ad-confirmations` or a set of `from:` clauses) for full coverage of the finite
+  newspaper-charge universe. `linked_proposed` is always **0** — links are a human step in the
+  UI (a rep's From domain does not reliably map to a bank merchant string). Result:
+  `{found, upserted, created, existing, linked_proposed, max_messages}`; a `rep-scan` `SyncLog`
+  row is written each run.
+
+UI: the "Ad rep ↔ bank strings" section on `/adm/confirmed-ctl-adm` (below Suggested
+Matches). NEVER a CRM/permtrak.com object.
+
+`build_vendor_link_index(db)` returns a read-once `VendorLinkIndex` (`{normalized_string →
+{rep_ids, rep_emails}}` for LINKED strings + a `catalog` set of ALL strings) consumed by
+the scorer's vendor-link boost (§8).
 
 **`ignore_memo_patterns`** — DB-tracked SAAS/vendor ignore-strings: `pattern` (short
 stable substring), `label`, `active`, `created_at`. Case-insensitive functional index
@@ -383,6 +406,17 @@ days (`CONFIRMED_CTL_MATCH_LOOKBACK_DAYS` / `_LOOKAHEAD_DAYS`). Score = 0.50·am
   Herald, Sun Sentinel, Chicago Tribune, NYT, Houston Chronicle) → 0.90; else difflib
   ratio (>0.5).
 - **Date:** 0-day 1.0, 1-day 0.85, 2-day 0.65, 3-day 0.40, ≤5-day 0.20.
+- **Vendor-link boost (ADDITIVE, clamped to 1.0):** when a `VendorLinkIndex` (built by
+  `vendors.build_vendor_link_index`) is passed to `get_candidate_transactions(…,
+  link_index=, from_emails=)`, a candidate whose `normalize_merchant_string(vendor_name)`
+  is a KNOWN ad vendor is nudged up: `vendor_link` +0.15 (string linked to an ad-rep),
+  `rep_email` +0.05 more (rep-email path — one of the ad's confirmation From addresses
+  matches a rep linked to that string; `/candidates` only, since `/suggested` does no
+  Gmail), `vendor_string` +0.03 (catalogued but unlinked). A non-catalogued string gets
+  **0.0** — unlinked candidates are NEVER penalized, only known/linked ones rise. Each
+  scored dict carries `match_reasons`, `boost_delta`, `base_score`; the API surfaces these
+  as `match_reasons` / `boost_delta` / `base_score_pct` on bank_candidates and suggestions.
+  Backward compatible: no `link_index` → scoring unchanged.
 
 `get_excluded_transactions(db, ad, …)` surfaces up to 10 near-miss txns (plausible by
 CC-fee amount) EXCLUDED from candidates as `out_of_window` or `already_matched`, scanning
@@ -409,6 +443,14 @@ confirmed-ctl receipt xfer-receipts      # STUB: Dropbox case-tree transfer (con
 confirmed-ctl receipts                   # back-compat alias for process_pending_receipts
 confirmed-ctl match --ad-crm-id <id>     # STUB: exits non-zero — live CRM ad hydration in CLI
                                          #   is a later gen (the API path uses the CRM adapter)
+
+# Ad-rep ↔ bank merchant-string registry (fang Postgres only; never the CRM):
+confirmed-ctl vendors scan               # seed bank_merchant_strings from bank_transactions
+    [--lookback-days N]                  #   (non-destructive upsert; never auto-links)
+confirmed-ctl vendors scan-reps          # seed ad_reps from ad-confirmation Gmail From headers
+    [--lookback-days N] [--query …]      #   (read-only harvest; upserts reps; never links/CRM)
+    [--max-messages N]                   #   (cap fetched msgs; default 300, newest-first)
+confirmed-ctl vendors list               # list reps / merchant strings / links
 
 # Ignore-string management (flag SAAS/vendor charges; flagged, never deleted):
 confirmed-ctl ignore seed                # seed default patterns (idempotent)

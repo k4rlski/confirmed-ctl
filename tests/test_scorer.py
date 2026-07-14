@@ -6,6 +6,9 @@ from confirmed_ctl import settings
 from confirmed_ctl.db.models import BankTransaction, CrmAd
 from confirmed_ctl.matching.scorer import (
     CC_FEE_MULTIPLIER,
+    REP_EMAIL_BOOST,
+    VENDOR_LINK_BOOST,
+    VENDOR_STRING_BOOST,
     _amount_matches_ccfee,
     _score_amount,
     _score_amount_ccfee,
@@ -15,6 +18,7 @@ from confirmed_ctl.matching.scorer import (
     get_candidate_transactions,
     get_excluded_transactions,
 )
+from confirmed_ctl.vendors import VendorLinkIndex
 
 
 def _txn(amount, vendor, txn_date):
@@ -305,3 +309,86 @@ def test_excluded_empty_when_no_expected_amount(monkeypatch):
     session = _RecordingSession(rows=[_bank_txn(1, -2000.0, date(2026, 7, 15))])
     ad = _ad(None, "Los Angeles Times", date(2026, 6, 17))
     assert get_excluded_transactions(session, ad) == []
+
+
+# --------------------------------------------------------------------------- #
+# Vendor-link boost (VendorLinkIndex + get_candidate_transactions integration)
+# --------------------------------------------------------------------------- #
+def test_link_index_match_reasons_and_boosts():
+    idx = VendorLinkIndex(
+        linked={
+            "DALLAS MORNING NEWS-AD-DALLAS ,TX": {
+                "rep_ids": [1],
+                "rep_emails": ["roshanda.buchanan@mediumgiant.co"],
+            }
+        },
+        catalog={
+            "DALLAS MORNING NEWS-AD-DALLAS ,TX",
+            "SF CHRONICLE ADVTZNG -SAN FRANCISCO,CA",
+        },
+    )
+    # Linked string, no From match -> vendor_link only.
+    reasons, boost = idx.match("Dallas Morning News-AD-Dallas ,TX")
+    assert reasons == ["vendor_link"]
+    assert boost == pytest.approx(VENDOR_LINK_BOOST)
+    # Linked string + matching confirmation From -> rep_email stacks on.
+    reasons, boost = idx.match(
+        "DALLAS MORNING NEWS-AD-DALLAS ,TX",
+        from_emails={"Roshanda.Buchanan@MediumGiant.co"},
+    )
+    assert reasons == ["vendor_link", "rep_email"]
+    assert boost == pytest.approx(VENDOR_LINK_BOOST + REP_EMAIL_BOOST)
+    # Catalogued but NOT linked -> weak vendor_string only.
+    reasons, boost = idx.match("SF CHRONICLE ADVTZNG -SAN FRANCISCO,CA")
+    assert reasons == ["vendor_string"]
+    assert boost == pytest.approx(VENDOR_STRING_BOOST)
+    # Unknown string -> no reason, no boost (never penalized).
+    reasons, boost = idx.match("SOME RANDOM VENDOR")
+    assert reasons == [] and boost == 0.0
+    # Blank vendor -> no boost.
+    assert idx.match(None) == ([], 0.0)
+
+
+def test_get_candidates_applies_vendor_link_boost():
+    d = date(2026, 6, 17)
+    # Two candidates with IDENTICAL base signals; only one's string is linked.
+    linked_txn = _txn(500.0, "DALLAS MORNING NEWS-AD-DALLAS ,TX", d)
+    linked_txn.id = 1
+    linked_txn.source = "email-scan"
+    linked_txn.source_txn_id = "a"
+    plain_txn = _txn(500.0, "SOME OTHER PAPER", d)
+    plain_txn.id = 2
+    plain_txn.source = "email-scan"
+    plain_txn.source_txn_id = "b"
+    session = _RecordingSession(rows=[linked_txn, plain_txn])
+    ad = _ad(500.0, None, d)  # no newspaper -> vendor base score 0 for both
+
+    idx = VendorLinkIndex(
+        linked={"DALLAS MORNING NEWS-AD-DALLAS ,TX": {"rep_ids": [1], "rep_emails": []}},
+        catalog={"DALLAS MORNING NEWS-AD-DALLAS ,TX"},
+    )
+    scored = get_candidate_transactions(session, ad, link_index=idx)
+    by_id = {c["transaction"].id: c for c in scored}
+    # Linked candidate is lifted by exactly VENDOR_LINK_BOOST above its base.
+    assert by_id[1]["match_reasons"] == ["vendor_link"]
+    assert by_id[1]["boost_delta"] == pytest.approx(VENDOR_LINK_BOOST)
+    assert by_id[1]["score"] == pytest.approx(by_id[1]["base_score"] + VENDOR_LINK_BOOST)
+    # Non-linked candidate keeps its base score (NOT penalized), no reasons.
+    assert by_id[2]["match_reasons"] == []
+    assert by_id[2]["score"] == pytest.approx(by_id[2]["base_score"])
+    # The linked candidate now ranks first.
+    assert scored[0]["transaction"].id == 1
+
+
+def test_get_candidates_no_link_index_is_unchanged():
+    d = date(2026, 6, 17)
+    txn = _txn(425.0, "LOS ANGELES TIMES ACH", d)
+    txn.id = 1
+    txn.source = "email-scan"
+    txn.source_txn_id = "a"
+    session = _RecordingSession(rows=[txn])
+    ad = _ad(425.0, "Los Angeles Times", d)
+    scored = get_candidate_transactions(session, ad)  # no link_index
+    assert scored[0]["match_reasons"] == []
+    assert scored[0]["boost_delta"] == 0.0
+    assert scored[0]["score"] == pytest.approx(1.0)  # unchanged perfect match

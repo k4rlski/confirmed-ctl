@@ -261,6 +261,54 @@ def vendors_scan(lookback_days):
     )
 
 
+@vendors.command("scan-reps")
+@click.option(
+    "--lookback-days",
+    default=None,
+    type=int,
+    help="Gmail lookback window in days (default: AD_REP_SCAN_LOOKBACK_DAYS=30).",
+)
+@click.option(
+    "--query",
+    default=None,
+    help="Override the Gmail query (default: exclude the BofA alert sender).",
+)
+@click.option(
+    "--max-messages",
+    default=None,
+    type=int,
+    help="Cap messages fetched (default: AD_REP_SCAN_MAX_MESSAGES=300, newest-first).",
+)
+def vendors_scan_reps(lookback_days, query, max_messages):
+    """Seed ad_reps from ad-confirmation Gmail From headers (read-only, non-destructive).
+
+    Harvests EXTERNAL sender addresses from the impersonated mailbox in the
+    lookback window and upserts them into ``ad_reps`` (email unique). Never
+    creates links or touches the CRM — a human links reps in the MARS UI.
+    """
+    from .ingest.rep_scan import run_rep_scan
+
+    try:
+        with get_db() as db:
+            result = run_rep_scan(
+                db,
+                lookback_days=lookback_days,
+                query=query,
+                max_messages=max_messages,
+            )
+    except Exception as exc:
+        click.echo(f"ERROR: rep-scan failed: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(
+        "vendors scan-reps complete "
+        f"(lookback {result['lookback_days']}d): "
+        f"found={result['found']} upserted={result['upserted']} "
+        f"(created={result['created']} existing={result['existing']}) "
+        f"linked_proposed={result['linked_proposed']}"
+    )
+
+
 @vendors.command("list")
 def vendors_list():
     """List reps, merchant strings, and links (id / key)."""
