@@ -511,6 +511,27 @@ matched bank txn (`{payment_type} {vendor_name} ON MM/DD {Debit|Credit}\t{signed
 
 ---
 
+## 12a. Incident docs (RAG-ingest pointer)
+
+> Chroma only ingests `rag/**.md`; incident RCAs under `docs/` are otherwise invisible
+> to semantic search. This pointer keeps the unique title in the ingest surface.
+
+- **INCIDENT-2026-07-map-trx-freeze** — `docs/INCIDENT-2026-07-map-trx-freeze.md`
+  ([confirmed-ctl#36](https://github.com/k4rlski/confirmed-ctl/issues/36)). Bank Map Trx
+  candidates silently froze 2026-07-08 → 2026-07-13 because the ingestion daemon unit
+  **`confirmed-ctl.service` was never installed** on fang (only `confirmed-ctl-api.service`
+  was). `systemctl status confirmed-ctl` returned *"Unit could not be found"*;
+  `bank_transactions` was frozen at the 42-row manual backfill. Fix (ops only, fang):
+  catch-up `confirmed-ctl sync --lookback-days 7`, then
+  `cp /opt/confirmed-ctl/confirmed-ctl.service /etc/systemd/system/ && systemctl
+  daemon-reload && systemctl enable --now confirmed-ctl.service`. Because fang's Postgres
+  is shared, this restored fresh candidates for **both claw and delta**. Lesson: a service
+  in the repo is not a service that is running — verify the **producer** before blaming UI/
+  proxy/Chroma. See also §10 (deployment "install BOTH units" warning). Cross-index:
+  mars-status `docs/INCIDENT-INDEX-2026-07.md`.
+
+---
+
 ## 13. Facts marked TBD
 
 - Exact live `CRM_DB_HOST` on fang (docs say `permtrak.com:3306`; ops reports
