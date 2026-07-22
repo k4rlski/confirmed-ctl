@@ -75,21 +75,37 @@ _SELECT_FROM = """SELECT news.owner AS owner, t_e_s_t_p_e_r_m.id, t_e_s_t_p_e_r_
 FROM t_e_s_t_p_e_r_m
 JOIN news ON t_e_s_t_p_e_r_m.news_id = news.id"""
 
-# The ABCF-X clearances WHERE clause, VERBATIM. EspoCRM stores enum fields as
-# JSON string arrays, so we match those exact string forms.
-_CLEARANCES_WHERE = """WHERE statnews='["Active"]' AND (entity='JKT' OR entity='PA')
+# Grace window (days) for COMPLETED (statnews ``["Done"]``) clearance ads. A
+# newspaper run is over once its statnews flips Active -> Done, but the ad must
+# stay visible for reconciliation for a while after the run ends. A Done ad is
+# kept in the clearances / unconfirmed feed only while its run END date
+# (``datenewsend``) is within this many days (or has no end date); Active ads are
+# NEVER bounded. Tune here — keep it bounded so ancient Done ads do not flood the
+# reconciliation queue.
+DONE_GRACE_DAYS = 90
+
+# The ABCF-X clearances WHERE clause. EspoCRM stores enum fields as JSON string
+# arrays, so we match those exact string forms. statnews is now Active OR Done
+# (previously Active-only, which dropped a clearance the moment its run ended and
+# statnews flipped to Done — even while it was still unmatched/unconfirmed). Done
+# rows are bounded by the DONE_GRACE_DAYS window on datenewsend.
+_CLEARANCES_WHERE = f"""WHERE statnews IN ('["Active"]', '["Done"]') AND (entity='JKT' OR entity='PA')
   AND statclearancenews='["Confirmed"]' AND t_e_s_t_p_e_r_m.deleted=0
   AND t_e_s_t_p_e_r_m.statpermcase='["Active Case"]'
+  AND (statnews='["Active"]'
+       OR datenewsend IS NULL
+       OR datenewsend >= DATE_SUB(CURDATE(), INTERVAL {DONE_GRACE_DAYS} DAY))
 ORDER BY datebuynews DESC"""
 
 CLEARANCES_QUERY = f"{_SELECT_FROM}\n{_CLEARANCES_WHERE}"
 
 # The RECONCILED WHERE clause is IDENTICAL to the clearances WHERE except it
 # matches ``statclearancenews='["Done"]'`` (ads this tool has already marked
-# Done via the write-back) instead of ``'["Confirmed"]'``. Everything else
-# (statnews Active, entity JKT/PA, deleted=0, statpermcase Active Case, and the
-# ORDER BY datebuynews DESC) is kept verbatim so the shape matches list_clearances.
-_RECONCILED_WHERE = """WHERE statnews='["Active"]' AND (entity='JKT' OR entity='PA')
+# Done via the write-back) instead of ``'["Confirmed"]'``. statnews is Active OR
+# Done: a real reconcile must REMAIN listed after the newspaper run ends (statnews
+# flips to Done) — the old Active-only gate wrongly hid completed reconciles. No
+# grace window here: tool-confirmed reconciles are evidence and should persist.
+_RECONCILED_WHERE = """WHERE statnews IN ('["Active"]', '["Done"]') AND (entity='JKT' OR entity='PA')
   AND statclearancenews='["Done"]' AND t_e_s_t_p_e_r_m.deleted=0
   AND t_e_s_t_p_e_r_m.statpermcase='["Active Case"]'
 ORDER BY datebuynews DESC"""
